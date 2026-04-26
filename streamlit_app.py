@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.1.4 workflow-locked
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.0 research-quality
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -17,6 +17,7 @@
 - V1.1.2新增：多中心/多层级课题字段，登录登记界面居中加宽，版本说明收纳到右上角。
 - V1.1.3新增：登记界面按院区/科室标准化下拉录入，按院区代码+科室代码+姓名首字母自动生成参与者编号；删除前台项目编号和第几次测试字段；评估阶段标准化为基线评估、模拟培训、培训后考核。
 - V1.1.4新增：按评估阶段自动锁定流程；基线评估=考试模式+初始病例，模拟培训=训练模式+初始病例，培训后考核=考试模式+变体病例Variant A；受试者不再自行选择运行模式和病例脚本。
+- V1.2.0新增：合并数据质量增强、管理员质控概览与研究分析字段；新增阶段完成状态、重复作答识别、阶段顺序核查、数据有效性标记和能力维度指标导出。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -47,7 +48,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.1.4 workflow-locked"
+APP_VERSION = "V1.2.0 research-quality"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -92,6 +93,14 @@ WORKFLOW_RULES = {
         "task": "请按考试要求独立完成变体病例处置。系统不会提供步骤原因提示。",
     },
 }
+
+PHASE_ORDER = {"基线评估": 1, "模拟培训": 2, "培训后考核": 3}
+PHASE_REQUIRED_PREVIOUS = {
+    "基线评估": [],
+    "模拟培训": ["基线评估"],
+    "培训后考核": ["基线评估", "模拟培训"],
+}
+PRIMARY_ANALYSIS_PHASES = ["基线评估", "模拟培训", "培训后考核"]
 
 
 def workflow_for_phase(phase: str) -> Dict[str, str]:
@@ -242,6 +251,8 @@ def init_session() -> None:
         "last_dose_feedback_level": "",
         "result_saved": False,
         "admin_export_view": "训练汇总",
+        "stage_progress_cache": {},
+        "stage_sequence_warning": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -371,7 +382,7 @@ def enrich_report(report: Dict[str, Any], end_reason: str = "") -> Dict[str, Any
     enriched = json.loads(json.dumps(report, ensure_ascii=False))
     enriched["session"] = build_session_metadata(end_reason=end_reason)
     enriched["end_reason"] = end_reason
-    return enriched
+    return attach_research_quality(enriched)
 
 
 def flatten_record(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -385,6 +396,8 @@ def flatten_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "session_id": session.get("session_id", ""),
         "participant_id": session.get("participant_id", ""),
         **research_metadata_from_session(session),
+        **data_quality_from_report(report),
+        **research_indicators_from_report(report),
         "mode": report.get("mode", ""),
         "scenario_script_name": report.get("scenario_script_name", ""),
         "scenario_title": report.get("scenario_title", ""),
@@ -512,7 +525,7 @@ def make_database_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "full_report": report,
         "app_version": session.get("app_version", APP_VERSION),
         "session_id": session.get("session_id", ""),
-        "client_note": "saved_from_streamlit_v1_1_4_workflow_locked",
+        "client_note": "saved_from_streamlit_v1_2_0_research_quality",
     }
 
 
@@ -736,6 +749,325 @@ def _yes_no(value: bool) -> str:
     return "是" if bool(value) else "否"
 
 
+def _present(value: Any) -> bool:
+    return value not in (None, "", [], {})
+
+
+def _phase_value(obj: Dict[str, Any]) -> str:
+    session = obj.get("session", {}) if isinstance(obj.get("session", {}), dict) else {}
+    return str(obj.get("assessment_phase") or session.get("assessment_phase") or "")
+
+
+def _participant_value(obj: Dict[str, Any]) -> str:
+    session = obj.get("session", {}) if isinstance(obj.get("session", {}), dict) else {}
+    return str(obj.get("participant_id") or session.get("participant_id") or "")
+
+
+def _created_value(obj: Dict[str, Any]) -> str:
+    session = obj.get("session", {}) if isinstance(obj.get("session", {}), dict) else {}
+    return str(obj.get("created_at") or session.get("created_at") or "")
+
+
+def _time_or_blank(value: Any) -> Any:
+    return value if value not in (None, "") else ""
+
+
+def _first_available_time(*values: Any) -> Any:
+    candidates = []
+    for value in values:
+        if value in (None, ""):
+            continue
+        try:
+            candidates.append(float(value))
+        except Exception:
+            continue
+    if not candidates:
+        return ""
+    v = min(candidates)
+    return int(v) if float(v).is_integer() else round(v, 2)
+
+
+def research_indicators_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Simulation-derived analysis fields for SPSS/R exports.
+
+    These fields intentionally live in full_report JSON and exported CSV, rather
+    than requiring new Supabase table columns.
+    """
+    timeline = report.get("key_timeline", {}) or {}
+    issues = _issue_text(report)
+    epi_time = timeline.get("epi_im", _first_log_time(report, "im_epinephrine"))
+    abc_time = _first_log_time(report, "abc_assess")
+    position_time = _first_log_time(report, "shock_position")
+    neb_epi_time = _first_log_time(report, "nebulized_epinephrine")
+    bronchodilator_time = _first_log_time(report, "bronchodilator")
+    recognition_time = _first_available_time(timeline.get("stop_infusion"), timeline.get("call_help"), abc_time)
+    epi_status = infer_epi_dose_status(report)
+    reassess_count = int(_safe_number(timeline.get("reassess_count", 0), 0))
+    serious_error = (
+        epi_status == "overdose"
+        or "心动过速致心衰" in issues
+        or _action_attempt_count(report, "continue_infusion") > 0
+        or _action_attempt_count(report, "sedation") > 0
+        or _action_attempt_count(report, "remove_iv") > 0
+    )
+    key_flags = {
+        "stop_infusion_done": _present(timeline.get("stop_infusion")),
+        "call_help_done": _present(timeline.get("call_help")),
+        "oxygen_given": _present(timeline.get("oxygen")),
+        "monitoring_connected": _present(timeline.get("monitor")),
+        "bp_assessment_done": _present(timeline.get("bp_check")),
+        "epinephrine_given": _present(epi_time),
+        "fluid_resuscitation_given": _present(timeline.get("fluid")),
+        "abc_assessment_done": _present(abc_time),
+        "position_management_done": _present(position_time),
+        "family_communication_done": _present(timeline.get("family_communication")),
+        "sbar_handoff_done": _present(timeline.get("sbar_handoff")),
+        "reassessment_done": reassess_count > 0,
+    }
+    completed = sum(1 for v in key_flags.values() if bool(v))
+    total = len(key_flags)
+    return {
+        "recognition_time_sec": recognition_time,
+        "recognized_anaphylaxis": _yes_no(_present(recognition_time)),
+        "stop_infusion_done": _yes_no(key_flags["stop_infusion_done"]),
+        "call_help_done": _yes_no(key_flags["call_help_done"]),
+        "epinephrine_given": _yes_no(key_flags["epinephrine_given"]),
+        "epinephrine_time_sec": _time_or_blank(epi_time),
+        "epinephrine_dose_correct": _yes_no(epi_status == "valid"),
+        "oxygen_given": _yes_no(key_flags["oxygen_given"]),
+        "oxygen_time_sec": _time_or_blank(timeline.get("oxygen")),
+        "monitoring_connected": _yes_no(key_flags["monitoring_connected"]),
+        "monitoring_time_sec": _time_or_blank(timeline.get("monitor")),
+        "bp_assessment_done": _yes_no(key_flags["bp_assessment_done"]),
+        "bp_assessment_time_sec": _time_or_blank(timeline.get("bp_check")),
+        "fluid_resuscitation_given": _yes_no(key_flags["fluid_resuscitation_given"]),
+        "fluid_time_sec": _time_or_blank(timeline.get("fluid")),
+        "epinephrine_under_dose": _yes_no(epi_status == "underdose"),
+        "epinephrine_over_dose": _yes_no(epi_status == "overdose"),
+        "serious_medication_error": _yes_no(serious_error),
+        "abc_assessment_done": _yes_no(key_flags["abc_assessment_done"]),
+        "abc_assessment_time_sec": _time_or_blank(abc_time),
+        "position_management_done": _yes_no(key_flags["position_management_done"]),
+        "position_time_sec": _time_or_blank(position_time),
+        "nebulized_epinephrine_time_sec": _time_or_blank(neb_epi_time),
+        "bronchodilator_time_sec": _time_or_blank(bronchodilator_time),
+        "reassessment_done": _yes_no(key_flags["reassessment_done"]),
+        "reassessment_count_analysis": reassess_count,
+        "family_communication_done": _yes_no(key_flags["family_communication_done"]),
+        "sbar_handoff_done": _yes_no(key_flags["sbar_handoff_done"]),
+        "critical_step_completion_count": completed,
+        "critical_step_completion_rate": round(completed / total * 100, 1) if total else "",
+    }
+
+
+def data_quality_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
+    q = report.get("data_quality", {}) if isinstance(report.get("data_quality", {}), dict) else {}
+    return {
+        "record_validity": q.get("record_validity", "未核查"),
+        "validity_note": q.get("validity_note", ""),
+        "is_repeated_attempt": q.get("is_repeated_attempt", ""),
+        "attempt_order": q.get("attempt_order", ""),
+        "stage_sequence_status": q.get("stage_sequence_status", ""),
+        "previous_completed_stages": q.get("previous_completed_stages", ""),
+        "missing_required_previous_stage": q.get("missing_required_previous_stage", ""),
+    }
+
+
+def assess_summary_record_quality(record: Dict[str, Any], previous_records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    participant_id = _participant_value(record)
+    phase = _phase_value(record)
+    workflow_locked = record.get("workflow_locked", "")
+    previous_same = [r for r in previous_records if _participant_value(r) == participant_id and participant_id]
+    same_phase_previous = [r for r in previous_same if _phase_value(r) == phase and phase]
+    completed_stages = [_phase_value(r) for r in previous_same if _phase_value(r) in PRIMARY_ANALYSIS_PHASES]
+    completed_stage_set = set(completed_stages)
+    missing_required = [p for p in PHASE_REQUIRED_PREVIOUS.get(phase, []) if p not in completed_stage_set]
+
+    notes: List[str] = []
+    if not participant_id or participant_id == "anonymous":
+        notes.append("缺少有效参与者编号")
+    if phase not in PRIMARY_ANALYSIS_PHASES:
+        notes.append("缺少或无法识别评估阶段")
+    if workflow_locked not in (True, "True", "true", "是", "1", 1):
+        notes.append("流程锁定字段异常")
+    if same_phase_previous:
+        notes.append("同一参与者同一阶段存在重复记录")
+    if missing_required:
+        notes.append("缺少前序阶段：" + "、".join(missing_required))
+    if phase == "基线评估" and any(PHASE_ORDER.get(p, 0) > 1 for p in completed_stage_set):
+        notes.append("基线评估晚于后续阶段记录")
+
+    if missing_required:
+        sequence_status = "缺少前序阶段：" + "、".join(missing_required)
+    elif phase == "基线评估" and any(PHASE_ORDER.get(p, 0) > 1 for p in completed_stage_set):
+        sequence_status = "基线评估晚于后续阶段"
+    else:
+        sequence_status = "顺序合理"
+
+    return {
+        "record_validity": "有效" if not notes else "需核查",
+        "validity_note": "；".join(notes),
+        "is_repeated_attempt": _yes_no(bool(same_phase_previous)),
+        "attempt_order": len(same_phase_previous) + 1,
+        "stage_sequence_status": sequence_status,
+        "previous_completed_stages": "、".join(sorted(completed_stage_set, key=lambda x: PHASE_ORDER.get(x, 99))),
+        "missing_required_previous_stage": "、".join(missing_required),
+    }
+
+
+def add_quality_fields_to_summary_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ordered = sorted(records, key=lambda r: _created_value(r))
+    previous_by_participant: Dict[str, List[Dict[str, Any]]] = {}
+    quality_by_session: Dict[str, Dict[str, Any]] = {}
+    for record in ordered:
+        pid = _participant_value(record)
+        previous = previous_by_participant.get(pid, [])
+        quality = assess_summary_record_quality(record, previous)
+        session_id = str(record.get("session_id", ""))
+        if session_id:
+            quality_by_session[session_id] = quality
+        previous_by_participant.setdefault(pid, []).append(record)
+
+    enriched: List[Dict[str, Any]] = []
+    for record in records:
+        merged = dict(record)
+        session_id = str(record.get("session_id", ""))
+        computed = quality_by_session.get(session_id, {})
+        if computed:
+            merged.update(computed)
+        enriched.append(merged)
+    return enriched
+
+
+def get_existing_quality_summaries_for_participant(participant_id: str) -> List[Dict[str, Any]]:
+    if not participant_id:
+        return []
+    try:
+        db_records, _ = load_result_records_database(limit=10000)
+        if db_records:
+            return [r for r in db_records if _participant_value(r) == participant_id]
+    except Exception:
+        pass
+    try:
+        local_reports = load_full_reports_local()
+        if local_reports:
+            records = build_summary_records_from_reports(local_reports, storage_source="local")
+            return [r for r in records if _participant_value(r) == participant_id]
+    except Exception:
+        pass
+    try:
+        local_summary = load_result_records_local()
+        return [r for r in local_summary if _participant_value(r) == participant_id]
+    except Exception:
+        return []
+
+
+def attach_research_quality(report: Dict[str, Any]) -> Dict[str, Any]:
+    report["research_indicators"] = research_indicators_from_report(report)
+    participant_id = _participant_value(report)
+    previous = get_existing_quality_summaries_for_participant(participant_id)
+    current_summary = report_to_summary_record_without_quality(report, storage_source="pending")
+    report["data_quality"] = assess_summary_record_quality(current_summary, previous)
+    return report
+
+
+def participant_progress_from_records(records: List[Dict[str, Any]], participant_id: str) -> Dict[str, Any]:
+    rows = [r for r in records if _participant_value(r) == participant_id]
+    stages = {phase: 0 for phase in PRIMARY_ANALYSIS_PHASES}
+    for row in rows:
+        phase = _phase_value(row)
+        if phase in stages:
+            stages[phase] += 1
+    complete_all = all(stages[p] > 0 for p in PRIMARY_ANALYSIS_PHASES)
+    repeated = {p: n for p, n in stages.items() if n > 1}
+    return {
+        "participant_id": participant_id,
+        "基线评估": stages["基线评估"],
+        "模拟培训": stages["模拟培训"],
+        "培训后考核": stages["培训后考核"],
+        "三阶段完整完成": _yes_no(complete_all),
+        "重复阶段": "；".join(f"{p}×{n}" for p, n in repeated.items()),
+    }
+
+
+def current_participant_progress(participant_id: str) -> Dict[str, Any]:
+    if not participant_id:
+        return {}
+    records = get_existing_quality_summaries_for_participant(participant_id)
+    return participant_progress_from_records(records, participant_id)
+
+
+def stage_warning_for_progress(phase: str, progress: Dict[str, Any]) -> str:
+    if not progress:
+        return ""
+    if phase == "模拟培训" and int(progress.get("基线评估", 0) or 0) == 0:
+        return "未检测到该参与者已完成基线评估。建议先完成基线评估，再进入模拟培训。"
+    if phase == "培训后考核":
+        missing = []
+        if int(progress.get("基线评估", 0) or 0) == 0:
+            missing.append("基线评估")
+        if int(progress.get("模拟培训", 0) or 0) == 0:
+            missing.append("模拟培训")
+        if missing:
+            return "未检测到该参与者已完成" + "、".join(missing) + "。建议按基线评估 → 模拟培训 → 培训后考核顺序完成。"
+    return ""
+
+
+def quality_overview_by_group(records: List[Dict[str, Any]], group_key: str) -> List[Dict[str, Any]]:
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for r in records:
+        g = str(r.get(group_key, "") or "未填写")
+        groups.setdefault(g, []).append(r)
+    rows: List[Dict[str, Any]] = []
+    for group_name, rows_in_group in sorted(groups.items(), key=lambda x: x[0]):
+        participants = sorted({_participant_value(r) for r in rows_in_group if _participant_value(r)})
+        complete_count = 0
+        for pid in participants:
+            progress = participant_progress_from_records(rows_in_group, pid)
+            if progress.get("三阶段完整完成") == "是":
+                complete_count += 1
+        invalid_count = sum(1 for r in rows_in_group if str(r.get("record_validity", "")) == "需核查")
+        repeated_count = sum(1 for r in rows_in_group if str(r.get("is_repeated_attempt", "")) == "是")
+        rows.append({
+            "分组": group_name,
+            "已参与人数": len(participants),
+            "基线评估记录": sum(1 for r in rows_in_group if _phase_value(r) == "基线评估"),
+            "模拟培训记录": sum(1 for r in rows_in_group if _phase_value(r) == "模拟培训"),
+            "培训后考核记录": sum(1 for r in rows_in_group if _phase_value(r) == "培训后考核"),
+            "完成三阶段人数": complete_count,
+            "完整完成率%": round(complete_count / len(participants) * 100, 1) if participants else 0,
+            "需核查记录": invalid_count,
+            "重复阶段记录": repeated_count,
+        })
+    return rows
+
+
+def participant_quality_overview(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    participants = sorted({_participant_value(r) for r in records if _participant_value(r)})
+    rows: List[Dict[str, Any]] = []
+    for pid in participants:
+        pid_records = [r for r in records if _participant_value(r) == pid]
+        progress = participant_progress_from_records(pid_records, pid)
+        row0 = pid_records[0] if pid_records else {}
+        rows.append({
+            "参与者编号": pid,
+            "院区": row0.get("campus", ""),
+            "科室": row0.get("department", ""),
+            "护理层级": row0.get("nurse_level", ""),
+            "基线评估": progress.get("基线评估", 0),
+            "模拟培训": progress.get("模拟培训", 0),
+            "培训后考核": progress.get("培训后考核", 0),
+            "三阶段完整完成": progress.get("三阶段完整完成", "否"),
+            "重复阶段": progress.get("重复阶段", ""),
+            "需核查记录数": sum(1 for r in pid_records if str(r.get("record_validity", "")) == "需核查"),
+        })
+    return rows
+
+
+def report_to_summary_record_without_quality(report: Dict[str, Any], storage_source: str = "supabase") -> Dict[str, Any]:
+    return report_to_summary_record(report, storage_source=storage_source, include_quality=False)
+
+
 def _issue_text(report: Dict[str, Any]) -> str:
     return "；".join(map(str, report.get("process_safety_issues", []) or []))
 
@@ -787,7 +1119,7 @@ def full_report_from_database_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return report
 
 
-def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supabase") -> Dict[str, Any]:
+def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supabase", include_quality: bool = True) -> Dict[str, Any]:
     session = report.get("session", {}) or {}
     patient = report.get("patient", {}) or {}
     timeline = report.get("key_timeline", {}) or {}
@@ -799,12 +1131,16 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
     max_score = _safe_number(report.get("max_score", 20), 20)
     epi_time = timeline.get("epi_im", _first_log_time(report, "im_epinephrine"))
     end_time = report.get("end_time_seconds", "")
+    quality_fields = data_quality_from_report(report) if include_quality else {}
+    research_fields = report.get("research_indicators") if isinstance(report.get("research_indicators"), dict) else research_indicators_from_report(report)
 
     record: Dict[str, Any] = {
         "created_at": session.get("created_at", ""),
         "session_id": session.get("session_id", ""),
         "participant_id": session.get("participant_id", ""),
         **research_metadata_from_session(session),
+        **quality_fields,
+        **research_fields,
         "mode": report.get("mode", ""),
         "scenario_script_name": report.get("scenario_script_name", ""),
         "scenario_title": report.get("scenario_title", ""),
@@ -896,6 +1232,7 @@ def report_to_action_detail_records(report: Dict[str, Any], storage_source: str 
             "session_id": session.get("session_id", ""),
             "participant_id": session.get("participant_id", ""),
             **research_metadata_from_session(session),
+            **data_quality_from_report(report),
             "mode": report.get("mode", ""),
             "scenario_script_name": report.get("scenario_script_name", ""),
             "age_years": patient.get("age_years", ""),
@@ -1195,7 +1532,7 @@ def render_participant_entry_page() -> None:
                 st.rerun()
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.1.4 控制台")
+    st.sidebar.title("V1.2.0 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1243,6 +1580,19 @@ def render_sidebar() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+    progress = current_participant_progress(st.session_state.get("participant_id", ""))
+    if progress:
+        st.sidebar.markdown(
+            f"**阶段完成状态**  \n"
+            f"基线评估：{int(progress.get('基线评估', 0) or 0)}次  \n"
+            f"模拟培训：{int(progress.get('模拟培训', 0) or 0)}次  \n"
+            f"培训后考核：{int(progress.get('培训后考核', 0) or 0)}次"
+        )
+        warn = stage_warning_for_progress(st.session_state.get("assessment_phase", ""), progress)
+        st.session_state.stage_sequence_warning = warn
+        if warn:
+            st.sidebar.warning(warn)
 
     scenario_path = scenario_path_by_role(workflow.get("script_role", "initial"))
     if scenario_path is None:
@@ -1923,7 +2273,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.1.2 多中心研究字段增强版")
+    st.markdown("### 管理员后台｜V1.2.0 研究质控与分析版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -1967,10 +2317,12 @@ def render_admin_page() -> None:
         raw_jsonl_records = local_summary_records
         storage_label = "local_summary_only"
 
+    summary_records = add_quality_fields_to_summary_records(summary_records)
+
     if local_summary_records and raw_db_rows:
         st.caption(f"本地备用摘要记录：{len(local_summary_records)} 条；当前后台优先显示云端数据库记录。")
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("训练记录数", len(summary_records))
     if summary_records:
         scores = []
@@ -1988,10 +2340,24 @@ def render_admin_page() -> None:
         c2.metric("平均得分", f"{sum(scores)/len(scores):.1f}" if scores else "-")
         c3.metric("Success次数", success_count)
         c4.metric("肾上腺素剂量错误", epi_invalid_count)
+        c5.metric("需核查记录", sum(1 for r in summary_records if str(r.get("record_validity", "")) == "需核查"))
     else:
         c2.metric("平均得分", "-")
         c3.metric("Success次数", "-")
         c4.metric("肾上腺素剂量错误", "-")
+        c5.metric("需核查记录", "-")
+
+    st.markdown("#### 数据质控概览")
+    if summary_records:
+        tab_campus, tab_dept, tab_participant = st.tabs(["按院区", "按科室", "按参与者"])
+        with tab_campus:
+            st.dataframe(quality_overview_by_group(summary_records, "campus"), use_container_width=True, hide_index=True)
+        with tab_dept:
+            st.dataframe(quality_overview_by_group(summary_records, "department"), use_container_width=True, hide_index=True)
+        with tab_participant:
+            st.dataframe(participant_quality_overview(summary_records), use_container_width=True, hide_index=True)
+    else:
+        st.info("暂无记录，产生训练记录后将自动显示各院区、各科室和参与者完成情况。")
 
     st.markdown("#### 数据导出")
     st.caption("汇总CSV适合Excel/SPSS/R做统计；操作明细CSV适合分析每一步操作路径；完整JSONL用于保留原始过程数据。")
@@ -2048,9 +2414,9 @@ def render_admin_page() -> None:
     with st.expander("字段说明", expanded=False):
         st.markdown(
             """
-            - **汇总 CSV**：每次训练一行，已将关键步骤时间点、肾上腺素剂量状态、错误操作次数、最终生命体征等展开为单独字段。
-            - **操作明细 CSV**：每个操作事件一行，包含操作时间、操作名称、加分、扣分、剂量、结果等，适合分析操作顺序和延迟。
-            - **完整 JSONL**：一行是一份完整训练报告，保留嵌套结构，适合长期归档和后续深度分析。
+            - **汇总 CSV**：每次训练一行，已将关键步骤时间点、肾上腺素剂量状态、错误操作次数、最终生命体征、数据有效性、阶段顺序和研究分析指标展开为单独字段。
+            - **操作明细 CSV**：每个操作事件一行，包含操作时间、操作名称、加分、扣分、剂量、结果、数据有效性等，适合分析操作顺序和延迟。
+            - **完整 JSONL**：一行是一份完整训练报告，保留嵌套结构；V1.2.0在其中保存 `research_indicators` 和 `data_quality`，适合长期归档和后续深度分析。
             """
         )
 
