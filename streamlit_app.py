@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.1.2 research-ready
+儿科护理急救动态分支虚拟仿真训练平台｜V1.1.3 registration-optimized
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -15,6 +15,7 @@
 - V1.1新增：接入Supabase云端数据库，训练结束后自动写入training_records表，管理员后台可从数据库读取并导出。
 - V1.1.1新增：管理员后台增强导出：汇总CSV、操作明细CSV、完整JSONL；关键操作时间点和剂量/错误指标展开为独立字段。
 - V1.1.2新增：多中心/多层级课题字段，登录登记界面居中加宽，版本说明收纳到右上角。
+- V1.1.3新增：登记界面按院区/科室标准化下拉录入，按院区代码+科室代码+姓名首字母自动生成参与者编号；删除前台项目编号和第几次测试字段；评估阶段标准化为基线评估、模拟培训、培训后考核。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -45,7 +46,60 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.1.2 research-ready"
+APP_VERSION = "V1.1.3 registration-optimized"
+
+DEFAULT_INSTITUTION = "本医疗机构"
+
+CAMPUS_CODES = {
+    "锦江院区": "JJYQ",
+    "眉山院区": "MSYQ",
+    "高新院区": "GXYQ",
+}
+
+DEPARTMENT_CODES = {
+    "呼吸科": "HXK",
+    "感染科": "GRK",
+    "肾脏科": "SZK",
+    "血液科": "XYK",
+    "心血管科": "XXGK",
+    "神经科": "SJK",
+    "PICU": "PICU",
+}
+
+ASSESSMENT_PHASE_OPTIONS = ["基线评估", "模拟培训", "培训后考核"]
+
+
+def normalize_initials(text: str) -> str:
+    """Keep only uppercase Latin letters/numbers from user-entered name initials."""
+    cleaned = "".join(ch for ch in str(text or "").upper().replace(" ", "") if ch.isalnum())
+    return cleaned[:8]
+
+
+def ensure_participant_suffix() -> str:
+    """Create a stable anti-duplication suffix for the current browser session."""
+    suffix = str(st.session_state.get("participant_unique_suffix", "") or "").strip()
+    if not suffix:
+        suffix = uuid.uuid4().hex[:4].upper()
+        st.session_state.participant_unique_suffix = suffix
+    return suffix
+
+
+def build_participant_id(campus: str, department: str, initials: str) -> str:
+    campus_code = CAMPUS_CODES.get(campus, "")
+    department_code = DEPARTMENT_CODES.get(department, "")
+    initials_code = normalize_initials(initials)
+    if not campus_code or not department_code or not initials_code:
+        return ""
+    return f"{campus_code}{department_code}{initials_code}-{ensure_participant_suffix()}"
+
+
+def participant_code_parts(campus: str, department: str, initials: str) -> Dict[str, str]:
+    return {
+        "campus_code": CAMPUS_CODES.get(campus, ""),
+        "department_code": DEPARTMENT_CODES.get(department, ""),
+        "participant_initials": normalize_initials(initials),
+    }
+
 
 
 def list_scenarios() -> Dict[str, Path]:
@@ -100,7 +154,11 @@ def state_key() -> str:
 def init_session() -> None:
     defaults = {
         "participant_id": "",
-        "institution": "",
+        "participant_initials": "",
+        "participant_unique_suffix": "",
+        "campus_code": "",
+        "department_code": "",
+        "institution": DEFAULT_INSTITUTION,
         "campus": "",
         "department": "",
         "department_type": "",
@@ -142,6 +200,9 @@ def init_session() -> None:
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+    if not st.session_state.get("institution"):
+        st.session_state.institution = DEFAULT_INSTITUTION
+    ensure_participant_suffix()
 
 
 def visible_vitals(sim: Simulator) -> Dict[str, str]:
@@ -207,7 +268,10 @@ def build_session_metadata(end_reason: str = "") -> Dict[str, Any]:
         "app_version": APP_VERSION,
         "session_id": st.session_state.get("session_id", ""),
         "participant_id": st.session_state.get("participant_id", "") or "anonymous",
-        "institution": st.session_state.get("institution", ""),
+        "participant_initials": st.session_state.get("participant_initials", ""),
+        "campus_code": st.session_state.get("campus_code", ""),
+        "department_code": st.session_state.get("department_code", ""),
+        "institution": st.session_state.get("institution", DEFAULT_INSTITUTION),
         "campus": st.session_state.get("campus", ""),
         "department": st.session_state.get("department", ""),
         "department_type": st.session_state.get("department_type", ""),
@@ -231,7 +295,10 @@ def research_metadata_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "institution": session.get("institution", ""),
         "campus": session.get("campus", ""),
+        "campus_code": session.get("campus_code", ""),
         "department": session.get("department", ""),
+        "department_code": session.get("department_code", ""),
+        "participant_initials": session.get("participant_initials", ""),
         "department_type": session.get("department_type", ""),
         "nurse_level": session.get("nurse_level", ""),
         "years_experience": session.get("years_experience", ""),
@@ -391,7 +458,7 @@ def make_database_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "full_report": report,
         "app_version": session.get("app_version", APP_VERSION),
         "session_id": session.get("session_id", ""),
-        "client_note": "saved_from_streamlit_v1_1_2_research_ready",
+        "client_note": "saved_from_streamlit_v1_1_3_registration_optimized",
     }
 
 
@@ -883,10 +950,10 @@ def finalize_if_done() -> None:
 
 def profile_required_missing() -> List[str]:
     required = {
-        "participant_id": "参与者编号",
-        "institution": "单位/医院",
         "campus": "院区/中心",
-        "department": "科室/病区",
+        "department": "科室细分",
+        "participant_initials": "姓名首字母",
+        "participant_id": "系统生成参与者编号",
         "nurse_level": "护理层级",
         "years_experience": "工作年限",
         "prior_anaphylaxis_training": "既往过敏反应培训",
@@ -898,7 +965,6 @@ def profile_required_missing() -> List[str]:
         if value is None or str(value).strip() == "":
             missing.append(label)
     return missing
-
 
 def render_version_corner() -> None:
     st.markdown(
@@ -914,34 +980,60 @@ def render_participant_entry_page() -> None:
         f"""
         <div class='login-hero'>
             <div class='login-title'>{html.escape(APP_TITLE)}</div>
-            <div class='login-subtitle'>多中心 · 多院区 · 多护理层级｜药物诱发过敏反应识别与初始处置能力评价</div>
+            <div class='login-subtitle'>多院区 · 多科室 · 多护理层级｜药物诱发过敏反应识别与初始处置能力评价</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    outer_left, center, outer_right = st.columns([0.12, 0.76, 0.12])
+    outer_left, center, outer_right = st.columns([0.08, 0.84, 0.08])
     with center:
         st.markdown(
             "<div class='login-card-title'>受试者信息登记</div>"
-            "<div class='login-card-desc'>请先完成基本信息登记。以下信息将写入训练报告和云端数据库，用于后续多院区、多层级课题分析。</div>",
+            "<div class='login-card-desc'>请按院区、科室和姓名首字母完成登记。系统将自动生成匿名参与者编号，并写入训练报告和云端数据库。</div>",
             unsafe_allow_html=True,
         )
 
         with st.form("participant_profile_form", clear_on_submit=False):
             st.markdown("##### 基本身份信息")
-            c1, c2, c3 = st.columns([1, 1, 1], gap="large")
-            participant_id = c1.text_input("参与者编号（必填）", value=st.session_state.participant_id, placeholder="例如 P001 / N1-001")
-            institution = c2.text_input("单位/医院（必填）", value=st.session_state.institution, placeholder="例如 XX儿童医院")
-            campus = c3.text_input("院区/中心（必填）", value=st.session_state.campus, placeholder="例如 主院区 / 天府院区")
 
-            c4, c5 = st.columns([1, 1], gap="large")
-            department = c4.text_input("科室/病区（必填）", value=st.session_state.department, placeholder="例如 儿科呼吸免疫病区")
-            department_type = c5.selectbox(
-                "科室类型",
-                ["", "儿科普通病区", "儿科急诊", "儿科ICU", "呼吸专科病区", "综合儿科", "门诊/输液区", "其他"],
-                index=(["", "儿科普通病区", "儿科急诊", "儿科ICU", "呼吸专科病区", "综合儿科", "门诊/输液区", "其他"].index(st.session_state.department_type)
-                       if st.session_state.department_type in ["", "儿科普通病区", "儿科急诊", "儿科ICU", "呼吸专科病区", "综合儿科", "门诊/输液区", "其他"] else 0),
+            campus_options = [""] + list(CAMPUS_CODES.keys())
+            department_options = [""] + list(DEPARTMENT_CODES.keys())
+
+            c1, c2, c3 = st.columns([1, 1, 1], gap="large")
+            campus = c1.selectbox(
+                "院区/中心（必填）",
+                campus_options,
+                index=campus_options.index(st.session_state.campus) if st.session_state.campus in campus_options else 0,
+            )
+            department = c2.selectbox(
+                "科室细分（必填）",
+                department_options,
+                index=department_options.index(st.session_state.department) if st.session_state.department in department_options else 0,
+            )
+            participant_initials = c3.text_input(
+                "姓名首字母（必填）",
+                value=st.session_state.participant_initials,
+                placeholder="例如 王思席填 WSX",
+                max_chars=8,
+            )
+
+            preview_id = build_participant_id(campus, department, participant_initials)
+            code_parts = participant_code_parts(campus, department, participant_initials)
+            id_col, note_col = st.columns([1.1, 1], gap="large")
+            id_col.text_input(
+                "系统生成参与者编号（自动生成，不需手动填写）",
+                value=preview_id,
+                disabled=True,
+            )
+            note_col.markdown(
+                f"""
+                <div class='id-help-box'>
+                    编码规则：院区代码 + 科室代码 + 姓名首字母 + 防重复后缀<br>
+                    当前代码：{html.escape(code_parts.get('campus_code', '') or '待选择')} / {html.escape(code_parts.get('department_code', '') or '待选择')}
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
             st.markdown("##### 护理层级与背景")
@@ -986,36 +1078,39 @@ def render_participant_entry_page() -> None:
                 index=yn_options.index(st.session_state.prior_simulation_experience) if st.session_state.prior_simulation_experience in yn_options else 0,
             )
 
-            n7, n8, n9 = st.columns([1, 1, 1], gap="large")
+            n7, n8 = st.columns([1, 1], gap="large")
             real_case_experience = n7.selectbox(
                 "是否处理过真实过敏反应病例",
                 yn_options,
                 index=yn_options.index(st.session_state.real_case_experience) if st.session_state.real_case_experience in yn_options else 0,
             )
-            training_batch = n8.text_input("培训批次/项目编号", value=st.session_state.training_batch, placeholder="例如 2026-B01")
-            phase_options = ["基线评估", "训练后评估", "随访评估", "正式考核", "试运行测试"]
-            assessment_phase = n9.selectbox(
+            assessment_phase = n8.selectbox(
                 "评估阶段（必填）",
-                phase_options,
-                index=phase_options.index(st.session_state.assessment_phase) if st.session_state.assessment_phase in phase_options else 0,
+                ASSESSMENT_PHASE_OPTIONS,
+                index=ASSESSMENT_PHASE_OPTIONS.index(st.session_state.assessment_phase)
+                if st.session_state.assessment_phase in ASSESSMENT_PHASE_OPTIONS else 0,
             )
 
-            attempt_no = st.number_input(
-                "第几次尝试/测试",
-                min_value=1,
-                max_value=20,
-                value=int(st.session_state.attempt_no or 1),
-                step=1,
+            st.markdown(
+                "<div class='form-note'>说明：项目编号与第几次测试不再由受试者填写；系统将在后台保留版本号、Session ID 和默认尝试序号用于数据追踪。</div>",
+                unsafe_allow_html=True,
             )
 
             submitted = st.form_submit_button("保存信息并进入训练系统", type="primary", use_container_width=True)
 
         if submitted:
-            st.session_state.participant_id = participant_id.strip()
-            st.session_state.institution = institution.strip()
+            initials_clean = normalize_initials(participant_initials)
+            generated_id = build_participant_id(campus, department, initials_clean)
+            parts = participant_code_parts(campus, department, initials_clean)
+
+            st.session_state.participant_initials = initials_clean
+            st.session_state.participant_id = generated_id
+            st.session_state.campus_code = parts.get("campus_code", "")
+            st.session_state.department_code = parts.get("department_code", "")
+            st.session_state.institution = DEFAULT_INSTITUTION
             st.session_state.campus = campus.strip()
             st.session_state.department = department.strip()
-            st.session_state.department_type = department_type.strip()
+            st.session_state.department_type = department.strip()
             st.session_state.nurse_level = nurse_level.strip()
             st.session_state.years_experience = years_experience
             st.session_state.professional_title = professional_title.strip()
@@ -1023,21 +1118,20 @@ def render_participant_entry_page() -> None:
             st.session_state.prior_anaphylaxis_training = prior_anaphylaxis_training.strip()
             st.session_state.prior_simulation_experience = prior_simulation_experience.strip()
             st.session_state.real_case_experience = real_case_experience.strip()
-            st.session_state.training_batch = training_batch.strip()
+            st.session_state.training_batch = ""
             st.session_state.assessment_phase = assessment_phase.strip()
-            st.session_state.attempt_no = int(attempt_no)
+            st.session_state.attempt_no = 1
 
             missing = profile_required_missing()
             if missing:
                 st.error("请先完整填写：" + "、".join(missing))
             else:
                 st.session_state.profile_completed = True
-                st.success("登记信息已保存，正在进入训练系统。")
+                st.success(f"登记信息已保存。系统生成参与者编号：{generated_id}")
                 st.rerun()
 
-
 def render_sidebar() -> None:
-    st.sidebar.title("V1.1.2 控制台")
+    st.sidebar.title("V1.1.3 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1452,6 +1546,27 @@ def inject_compact_css() -> None:
             background: #ffffff;
             padding: 1.05rem 1.25rem 0.4rem 1.25rem;
         }
+        .id-help-box {
+            min-height: 3.15rem;
+            border: 1px solid #dbeafe;
+            border-radius: 0.8rem;
+            background: #eff6ff;
+            color: #1e3a8a;
+            font-size: 0.88rem;
+            line-height: 1.55;
+            padding: 0.78rem 0.95rem;
+            margin-top: 1.55rem;
+        }
+        .form-note {
+            color: #667085;
+            background: #f8fafc;
+            border: 1px dashed #cbd5e1;
+            border-radius: 0.8rem;
+            padding: 0.72rem 0.9rem;
+            font-size: 0.9rem;
+            line-height: 1.55;
+            margin: 0.2rem 0 0.85rem 0;
+        }
         .login-card-desc {
             font-size: 0.94rem;
             color: #667085;
@@ -1665,20 +1780,22 @@ def render_intro() -> None:
             {"项目": "参与者编号", "内容": st.session_state.get("participant_id", "")},
             {"项目": "单位/医院", "内容": st.session_state.get("institution", "")},
             {"项目": "院区/中心", "内容": st.session_state.get("campus", "")},
-            {"项目": "科室/病区", "内容": st.session_state.get("department", "")},
+            {"项目": "院区代码", "内容": st.session_state.get("campus_code", "")},
+            {"项目": "科室细分", "内容": st.session_state.get("department", "")},
+            {"项目": "科室代码", "内容": st.session_state.get("department_code", "")},
+            {"项目": "姓名首字母", "内容": st.session_state.get("participant_initials", "")},
             {"项目": "护理层级", "内容": st.session_state.get("nurse_level", "")},
             {"项目": "工作年限", "内容": f"{st.session_state.get('years_experience', '')} 年"},
             {"项目": "评估阶段", "内容": st.session_state.get("assessment_phase", "")},
-            {"项目": "第几次尝试", "内容": st.session_state.get("attempt_no", "")},
         ]
         st.dataframe(info_rows, use_container_width=True, hide_index=True)
 
     with right:
         st.container(border=True).markdown(
             """
-            **V1.1.2 研究字段增强版**
+            **V1.1.3 登记优化版**
 
-            本版用于支撑“多中心/多院区/多护理层级”的课题数据收集。系统会在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
+            本版用于支撑“多院区/多科室/多护理层级”的课题数据收集。系统按院区、科室和姓名首字母自动生成匿名参与者编号，并在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
 
             管理员后台仍支持三类导出：训练汇总CSV、操作明细CSV、完整JSONL。
             """
