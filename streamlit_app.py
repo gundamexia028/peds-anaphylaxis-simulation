@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.1.3 registration-optimized
+儿科护理急救动态分支虚拟仿真训练平台｜V1.1.4 workflow-locked
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -16,6 +16,7 @@
 - V1.1.1新增：管理员后台增强导出：汇总CSV、操作明细CSV、完整JSONL；关键操作时间点和剂量/错误指标展开为独立字段。
 - V1.1.2新增：多中心/多层级课题字段，登录登记界面居中加宽，版本说明收纳到右上角。
 - V1.1.3新增：登记界面按院区/科室标准化下拉录入，按院区代码+科室代码+姓名首字母自动生成参与者编号；删除前台项目编号和第几次测试字段；评估阶段标准化为基线评估、模拟培训、培训后考核。
+- V1.1.4新增：按评估阶段自动锁定流程；基线评估=考试模式+初始病例，模拟培训=训练模式+初始病例，培训后考核=考试模式+变体病例Variant A；受试者不再自行选择运行模式和病例脚本。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -46,7 +47,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.1.3 registration-optimized"
+APP_VERSION = "V1.1.4 workflow-locked"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -67,6 +68,34 @@ DEPARTMENT_CODES = {
 }
 
 ASSESSMENT_PHASE_OPTIONS = ["基线评估", "模拟培训", "培训后考核"]
+
+WORKFLOW_RULES = {
+    "基线评估": {
+        "mode": "exam",
+        "script_role": "initial",
+        "script_label": "初始病例",
+        "display": "基线评估｜考试模式｜初始病例",
+        "task": "请按考试要求独立完成初始病例处置。系统不会提供步骤原因提示。",
+    },
+    "模拟培训": {
+        "mode": "coach",
+        "script_role": "initial",
+        "script_label": "初始病例",
+        "display": "模拟培训｜训练模式｜初始病例",
+        "task": "请在训练模式下完成初始病例。系统将提供必要的步骤提示与复盘信息。",
+    },
+    "培训后考核": {
+        "mode": "exam",
+        "script_role": "variant",
+        "script_label": "变体病例 Variant A",
+        "display": "培训后考核｜考试模式｜变体病例 Variant A",
+        "task": "请按考试要求独立完成变体病例处置。系统不会提供步骤原因提示。",
+    },
+}
+
+
+def workflow_for_phase(phase: str) -> Dict[str, str]:
+    return WORKFLOW_RULES.get(phase, WORKFLOW_RULES["基线评估"])
 
 
 def normalize_initials(text: str) -> str:
@@ -122,6 +151,19 @@ def list_scenarios() -> Dict[str, Path]:
     return {label: path for _, label, path in sorted(items, key=lambda x: x[0])}
 
 
+def scenario_path_by_role(role: str) -> Optional[Path]:
+    """Return the scenario path matching the locked workflow script role."""
+    for path in sorted(SCENARIO_DIR.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            meta = data.get("scenario", {})
+            if meta.get("script_role", "") == role:
+                return path
+        except Exception:
+            continue
+    return None
+
+
 def safe_filename_part(text: str) -> str:
     cleaned = str(text or "").strip()
     for ch in '\\/:*?"<>|':
@@ -171,6 +213,10 @@ def init_session() -> None:
         "real_case_experience": "",
         "training_batch": "",
         "assessment_phase": "基线评估",
+        "workflow_mode": "exam",
+        "workflow_script_role": "initial",
+        "workflow_display": "基线评估｜考试模式｜初始病例",
+        "workflow_locked": True,
         "attempt_no": 1,
         "profile_completed": False,
         "app_unlocked": False,
@@ -284,6 +330,10 @@ def build_session_metadata(end_reason: str = "") -> Dict[str, Any]:
         "real_case_experience": st.session_state.get("real_case_experience", ""),
         "training_batch": st.session_state.get("training_batch", ""),
         "assessment_phase": st.session_state.get("assessment_phase", ""),
+        "workflow_mode": st.session_state.get("workflow_mode", ""),
+        "workflow_script_role": st.session_state.get("workflow_script_role", ""),
+        "workflow_display": st.session_state.get("workflow_display", ""),
+        "workflow_locked": bool(st.session_state.get("workflow_locked", True)),
         "attempt_no": st.session_state.get("attempt_no", ""),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "end_reason": end_reason,
@@ -309,6 +359,10 @@ def research_metadata_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
         "real_case_experience": session.get("real_case_experience", ""),
         "training_batch": session.get("training_batch", ""),
         "assessment_phase": session.get("assessment_phase", ""),
+        "workflow_mode": session.get("workflow_mode", ""),
+        "workflow_script_role": session.get("workflow_script_role", ""),
+        "workflow_display": session.get("workflow_display", ""),
+        "workflow_locked": session.get("workflow_locked", ""),
         "attempt_no": session.get("attempt_no", ""),
     }
 
@@ -458,7 +512,7 @@ def make_database_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "full_report": report,
         "app_version": session.get("app_version", APP_VERSION),
         "session_id": session.get("session_id", ""),
-        "client_note": "saved_from_streamlit_v1_1_3_registration_optimized",
+        "client_note": "saved_from_streamlit_v1_1_4_workflow_locked",
     }
 
 
@@ -713,6 +767,10 @@ def full_report_from_database_row(row: Dict[str, Any]) -> Dict[str, Any]:
         session.setdefault("real_case_experience", "")
         session.setdefault("training_batch", "")
         session.setdefault("assessment_phase", "")
+        session.setdefault("workflow_mode", "")
+        session.setdefault("workflow_script_role", "")
+        session.setdefault("workflow_display", "")
+        session.setdefault("workflow_locked", "")
         session.setdefault("attempt_no", "")
         session.setdefault("app_version", row.get("app_version", APP_VERSION))
     report.setdefault("mode", row.get("mode", ""))
@@ -1120,6 +1178,12 @@ def render_participant_entry_page() -> None:
             st.session_state.real_case_experience = real_case_experience.strip()
             st.session_state.training_batch = ""
             st.session_state.assessment_phase = assessment_phase.strip()
+            workflow = workflow_for_phase(st.session_state.assessment_phase)
+            st.session_state.workflow_mode = workflow.get("mode", "exam")
+            st.session_state.workflow_script_role = workflow.get("script_role", "initial")
+            st.session_state.workflow_display = workflow.get("display", "")
+            st.session_state.workflow_locked = True
+            st.session_state.mode = st.session_state.workflow_mode
             st.session_state.attempt_no = 1
 
             missing = profile_required_missing()
@@ -1131,7 +1195,7 @@ def render_participant_entry_page() -> None:
                 st.rerun()
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.1.3 控制台")
+    st.sidebar.title("V1.1.4 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1159,42 +1223,39 @@ def render_sidebar() -> None:
         st.session_state.ended = False
         st.rerun()
 
-    st.sidebar.subheader("训练设置")
-    scenarios = list_scenarios()
-    default_label = next(iter(scenarios.keys()), "")
-    if not st.session_state.scenario_label:
-        st.session_state.scenario_label = default_label
+    st.sidebar.subheader("本阶段任务")
+    workflow = workflow_for_phase(st.session_state.get("assessment_phase", "基线评估"))
+    st.session_state.workflow_mode = workflow.get("mode", "exam")
+    st.session_state.workflow_script_role = workflow.get("script_role", "initial")
+    st.session_state.workflow_display = workflow.get("display", "")
+    st.session_state.workflow_locked = True
+    st.session_state.mode = st.session_state.workflow_mode
 
-    st.session_state.mode = st.sidebar.radio(
-        "运行模式",
-        options=["coach", "exam"],
-        format_func=lambda x: "训练模式（逐步提示）" if x == "coach" else "考试模式（选项随机）",
-        index=0 if st.session_state.mode == "coach" else 1,
+    st.sidebar.markdown(
+        f"""
+        <div style="border:1px solid #E5E7EB;border-radius:14px;padding:0.85rem 0.9rem;background:#F8FAFC;margin-bottom:0.75rem;">
+            <div style="font-size:0.85rem;color:#64748B;margin-bottom:0.25rem;">评估阶段</div>
+            <div style="font-size:1.05rem;font-weight:700;color:#0F172A;margin-bottom:0.55rem;">{html.escape(st.session_state.get('assessment_phase', ''))}</div>
+            <div style="font-size:0.85rem;color:#64748B;margin-bottom:0.25rem;">锁定流程</div>
+            <div style="font-size:0.98rem;font-weight:650;color:#1E293B;margin-bottom:0.55rem;">{html.escape(workflow.get('display', ''))}</div>
+            <div style="font-size:0.82rem;color:#475569;line-height:1.45;">{html.escape(workflow.get('task', ''))}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    st.session_state.scenario_label = st.sidebar.selectbox(
-        "情景脚本",
-        options=list(scenarios.keys()),
-        index=list(scenarios.keys()).index(st.session_state.scenario_label)
-        if st.session_state.scenario_label in scenarios else 0,
-    )
-
-    st.session_state.seed = st.sidebar.number_input(
-        "随机种子（-1为按当前时间随机）",
-        min_value=-1,
-        value=int(st.session_state.seed),
-        step=1,
-    )
-
-    if st.sidebar.button("开始/重置本次模拟", type="primary", use_container_width=True):
+    scenario_path = scenario_path_by_role(workflow.get("script_role", "initial"))
+    if scenario_path is None:
+        st.sidebar.error("未找到本阶段对应的病例脚本，请检查 scenarios 文件夹。")
+    elif st.sidebar.button("开始/重置本阶段任务", type="primary", use_container_width=True):
         missing = profile_required_missing()
         if missing:
             st.sidebar.error("请先完整填写：" + "、".join(missing))
         else:
             start_simulation(
-                scenario_path=scenarios[st.session_state.scenario_label],
-                mode=st.session_state.mode,
-                seed=int(st.session_state.seed),
+                scenario_path=scenario_path,
+                mode=workflow.get("mode", "exam"),
+                seed=-1,
                 participant_id=st.session_state.participant_id.strip(),
             )
             st.rerun()
