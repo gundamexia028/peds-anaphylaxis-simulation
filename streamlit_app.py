@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜网页原型 v0.8.2 scoring-table
+儿科护理急救动态分支虚拟仿真训练平台｜V1.0 promotion-ready
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -11,7 +11,7 @@
 - 肌注肾上腺素需输入剂量，系统按体重核对 0.01 mg/kg 与 0.5 mg 上限。
 - 每次开始/重置模拟时自动随机生成年龄与体重：年龄 2-12 岁，体重 10-35 kg。
 - 按用户确认的14项评分细则校准最佳时间窗：总分20分。
-- 固定配合 Windows 稳定启动脚本使用 8502 端口。
+- V1.0新增：访问码、单位/科室/参与者编号、自动保存结果、管理员导出CSV、操作历史即时显示。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -19,7 +19,9 @@
 
 from __future__ import annotations
 
+import csv
 import html
+import io
 import json
 import os
 import random
@@ -37,7 +39,9 @@ APP_TITLE = "儿科护理急救动态分支虚拟仿真训练平台"
 APP_SUBTITLE = "Dynamic Branching Virtual Simulation Platform for Pediatric Nursing Emergency Training"
 ROOT = Path(__file__).resolve().parent
 SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
-RUNS_DIR = ROOT / "runs_web"
+RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
+RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
+APP_VERSION = "V1.0 promotion-ready"
 
 
 def list_scenarios() -> Dict[str, Path]:
@@ -92,6 +96,11 @@ def state_key() -> str:
 def init_session() -> None:
     defaults = {
         "participant_id": "",
+        "institution": "",
+        "department": "",
+        "app_unlocked": False,
+        "admin_unlocked": False,
+        "page": "训练系统",
         "mode": "coach",
         "scenario_label": "",
         "seed": -1,
@@ -110,6 +119,7 @@ def init_session() -> None:
         "pending_dose_action_label": "",
         "last_dose_feedback": "",
         "last_dose_feedback_level": "",
+        "result_saved": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -163,6 +173,139 @@ def get_report_download(report: Dict[str, Any]) -> bytes:
     return json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
 
 
+def get_secret_value(name: str, default: str = "") -> str:
+    """Read a config value from Streamlit secrets, environment variables, or fallback default."""
+    try:
+        value = st.secrets.get(name, None)  # type: ignore[attr-defined]
+    except Exception:
+        value = None
+    if value is None:
+        value = os.environ.get(name, default)
+    return str(value or "")
+
+
+def build_session_metadata(end_reason: str = "") -> Dict[str, Any]:
+    return {
+        "app_version": APP_VERSION,
+        "session_id": st.session_state.get("session_id", ""),
+        "participant_id": st.session_state.get("participant_id", "") or "anonymous",
+        "institution": st.session_state.get("institution", ""),
+        "department": st.session_state.get("department", ""),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "end_reason": end_reason,
+    }
+
+
+def enrich_report(report: Dict[str, Any], end_reason: str = "") -> Dict[str, Any]:
+    enriched = json.loads(json.dumps(report, ensure_ascii=False))
+    enriched["session"] = build_session_metadata(end_reason=end_reason)
+    enriched["end_reason"] = end_reason
+    return enriched
+
+
+def flatten_record(report: Dict[str, Any]) -> Dict[str, Any]:
+    session = report.get("session", {}) or {}
+    patient = report.get("patient", {}) or {}
+    timeline = report.get("key_timeline", {}) or {}
+    issues = report.get("process_safety_issues", []) or []
+    missing = report.get("critical_missing", []) or []
+    return {
+        "created_at": session.get("created_at", ""),
+        "session_id": session.get("session_id", ""),
+        "participant_id": session.get("participant_id", ""),
+        "institution": session.get("institution", ""),
+        "department": session.get("department", ""),
+        "mode": report.get("mode", ""),
+        "scenario_script_name": report.get("scenario_script_name", ""),
+        "scenario_title": report.get("scenario_title", ""),
+        "age_years": patient.get("age_years", ""),
+        "weight_kg": patient.get("weight_kg", ""),
+        "end_reason": report.get("end_reason", ""),
+        "end_time_seconds": report.get("end_time_seconds", ""),
+        "final_grade": report.get("final_grade", ""),
+        "score": report.get("score", ""),
+        "raw_score": report.get("raw_score", ""),
+        "penalties": report.get("penalties", ""),
+        "max_score": report.get("max_score", ""),
+        "reassess_count": timeline.get("reassess_count", ""),
+        "epi_last_dose_mg": timeline.get("epi_last_dose_mg", ""),
+        "epi_target_dose_mg": timeline.get("epi_target_dose_mg", ""),
+        "process_safety_issues": "；".join(map(str, issues)),
+        "critical_missing": "；".join(map(str, missing)),
+        "app_version": session.get("app_version", APP_VERSION),
+    }
+
+
+def save_result_record(report: Dict[str, Any]) -> None:
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    with RESULTS_INDEX_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(flatten_record(report), ensure_ascii=False) + "\n")
+
+
+def load_result_records() -> List[Dict[str, Any]]:
+    if not RESULTS_INDEX_PATH.exists():
+        return []
+    records: List[Dict[str, Any]] = []
+    with RESULTS_INDEX_PATH.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    records.append(obj)
+            except Exception:
+                continue
+    return records
+
+
+def records_to_csv_bytes(records: List[Dict[str, Any]]) -> bytes:
+    if not records:
+        return "".encode("utf-8-sig")
+    fieldnames: List[str] = []
+    for row in records:
+        for key in row.keys():
+            if key not in fieldnames:
+                fieldnames.append(key)
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(records)
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def action_label_map(sim: Simulator) -> Dict[str, str]:
+    return {str(a.get("id", "")): str(a.get("label", a.get("id", ""))) for a in sim.actions}
+
+
+def get_action_history_rows(sim: Simulator) -> List[Dict[str, Any]]:
+    labels = action_label_map(sim)
+    rows: List[Dict[str, Any]] = []
+    for entry in sim.log:
+        if entry.kind != "action":
+            continue
+        if entry.message == "penalty":
+            continue
+        data = entry.data or {}
+        msg = entry.message
+        result = ""
+        display = data.get("label") or labels.get(msg, msg)
+        if msg == "im_epinephrine_dose_verified":
+            display = "肌注肾上腺素剂量确认"
+            result = f"有效剂量 {data.get('dose_mg', '')} mg"
+        elif msg == "im_epinephrine_underdose":
+            display = "肌注肾上腺素剂量不足"
+            result = f"无效：{data.get('dose_mg', '')} mg，目标 {data.get('target_dose_mg', '')} mg"
+        elif msg == "im_epinephrine_overdose":
+            display = "肌注肾上腺素过量"
+            result = f"过量：{data.get('dose_mg', '')} mg"
+        elif data.get("gained") is not None:
+            result = f"得分 +{data.get('gained')}"
+        rows.append({"时间": f"{entry.t}s", "操作": str(display), "结果": str(result)})
+    return rows
+
+
 def start_simulation(scenario_path: Path, mode: str, seed: int, participant_id: str) -> None:
     scenario_source = load_scenario(str(scenario_path))
     scenario = randomize_patient_profile(scenario_source)
@@ -185,6 +328,7 @@ def start_simulation(scenario_path: Path, mode: str, seed: int, participant_id: 
     st.session_state.pending_dose_action_label = ""
     st.session_state.last_dose_feedback = ""
     st.session_state.last_dose_feedback_level = ""
+    st.session_state.result_saved = False
 
 
 def finalize_if_done() -> None:
@@ -193,9 +337,12 @@ def finalize_if_done() -> None:
         return
     done, why = sim.is_done()
     if done:
-        report = sim.build_report()
+        report = enrich_report(sim.build_report(), end_reason=why)
         out_dir = RUNS_DIR / st.session_state.session_id
         json_path, md_path = save_report(report, str(out_dir))
+        if not st.session_state.get("result_saved", False):
+            save_result_record(report)
+            st.session_state.result_saved = True
         st.session_state.ended = True
         st.session_state.end_reason = why
         st.session_state.last_report = report
@@ -203,17 +350,39 @@ def finalize_if_done() -> None:
 
 
 def render_sidebar() -> None:
-    st.sidebar.title("训练设置")
+    st.sidebar.title("V1.0 控制台")
+    st.session_state.page = st.sidebar.radio(
+        "页面",
+        options=["训练系统", "管理员后台"],
+        index=0 if st.session_state.page == "训练系统" else 1,
+    )
+
+    if st.session_state.page == "管理员后台":
+        st.sidebar.caption("管理员后台用于查看并导出训练记录。")
+        return
+
+    st.sidebar.subheader("受试者信息")
+    st.session_state.participant_id = st.sidebar.text_input(
+        "参与者编号（必填）",
+        value=st.session_state.participant_id,
+        placeholder="例如 P01 / N1-001",
+    )
+    st.session_state.institution = st.sidebar.text_input(
+        "单位/医院（必填）",
+        value=st.session_state.institution,
+        placeholder="例如 XX儿童医院",
+    )
+    st.session_state.department = st.sidebar.text_input(
+        "科室/病区（必填）",
+        value=st.session_state.department,
+        placeholder="例如 儿科呼吸免疫病区",
+    )
+
+    st.sidebar.subheader("训练设置")
     scenarios = list_scenarios()
     default_label = next(iter(scenarios.keys()), "")
     if not st.session_state.scenario_label:
         st.session_state.scenario_label = default_label
-
-    st.session_state.participant_id = st.sidebar.text_input(
-        "护士/参与者编号",
-        value=st.session_state.participant_id,
-        placeholder="例如 P01 / N1-001",
-    )
 
     st.session_state.mode = st.sidebar.radio(
         "运行模式",
@@ -237,13 +406,23 @@ def render_sidebar() -> None:
     )
 
     if st.sidebar.button("开始/重置本次模拟", type="primary", use_container_width=True):
-        start_simulation(
-            scenario_path=scenarios[st.session_state.scenario_label],
-            mode=st.session_state.mode,
-            seed=int(st.session_state.seed),
-            participant_id=st.session_state.participant_id.strip(),
-        )
-        st.rerun()
+        missing = []
+        if not st.session_state.participant_id.strip():
+            missing.append("参与者编号")
+        if not st.session_state.institution.strip():
+            missing.append("单位/医院")
+        if not st.session_state.department.strip():
+            missing.append("科室/病区")
+        if missing:
+            st.sidebar.error("请先填写：" + "、".join(missing))
+        else:
+            start_simulation(
+                scenario_path=scenarios[st.session_state.scenario_label],
+                mode=st.session_state.mode,
+                seed=int(st.session_state.seed),
+                participant_id=st.session_state.participant_id.strip(),
+            )
+            st.rerun()
 
     st.sidebar.divider()
     st.sidebar.caption("声明：仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。")
@@ -504,6 +683,46 @@ def inject_compact_css() -> None:
             line-height: 1.35;
             margin-top: 0.26rem;
         }
+
+        .history-panel {
+            border: 1px solid #d9dee7;
+            background: #ffffff;
+            border-radius: 0.72rem;
+            padding: 0.70rem 0.78rem;
+            margin-top: 0.72rem;
+            margin-bottom: 0.64rem;
+        }
+        .history-title {
+            font-size: 1.00rem;
+            font-weight: 800;
+            color: #111827;
+            margin-bottom: 0.42rem;
+        }
+        .history-empty {
+            color: #667085;
+            font-size: 0.92rem;
+            line-height: 1.35;
+        }
+        .history-list {
+            display: grid;
+            gap: 0.38rem;
+            max-height: 15.5rem;
+            overflow-y: auto;
+            padding-right: 0.20rem;
+        }
+        .history-item {
+            display: grid;
+            grid-template-columns: 4.5rem 1fr auto;
+            gap: 0.55rem;
+            align-items: center;
+            border: 1px solid #eef1f5;
+            background: #f8fafc;
+            border-radius: 0.56rem;
+            padding: 0.45rem 0.55rem;
+        }
+        .history-time {color:#475569; font-size:0.86rem; font-weight:700;}
+        .history-action {color:#111827; font-size:0.94rem; font-weight:750;}
+        .history-result {color:#667085; font-size:0.82rem; text-align:right;}
         div[data-testid="stExpander"] details {
             border-radius: 0.55rem !important;
         }
@@ -675,7 +894,7 @@ def render_intro() -> None:
     with left:
         st.markdown(
             """
-            **v0.8 随机年龄体重版目标**
+            **V1.0 推广试运行版目标**
 
             - 把原有 Python 动态分支引擎封装成网页端操作界面；
             - 时间/分级/得分/复评移至左侧病例下方，避免占用顶部横向空间；
@@ -684,17 +903,127 @@ def render_intro() -> None:
             - 肌注肾上腺素需要输入总剂量，系统按 0.01 mg/kg 和 0.5 mg 上限判定有效、无效或药物不良事件；
             - 每次点击“开始/重置本次模拟”时随机生成患儿年龄和体重：年龄 2-12 岁，体重 10-35 kg；
             - 肾上腺素目标剂量会随随机体重自动变化；
-            - 为后续病例库、护士账号、后台统计和科研数据导出预留结构。
+            - 增加参与者编号、单位/医院、科室/病区字段；
+            - 每次结束自动保存训练结果，管理员后台可导出 CSV；
+            - 右侧选项下方实时显示“已执行操作”，方便受试者确认自己的操作路径。
             """
         )
     with right:
         st.container(border=True).markdown(
             """
-            **当前建议使用方式**  
-            双击“启动_稳定版_推荐先点这个.cmd”，浏览器访问 `http://127.0.0.1:8502`。  
-            训练期间不要关闭黑色窗口，否则网页会连接中断。
+            **当前版本定位**  
+            V1.0 为线上推广试运行版：可通过网页访问、完成训练、自动保存结果，并在管理员后台导出 CSV。  
+            正式多中心长期运行前，建议进一步升级为数据库存储和独立账号权限。
             """
         )
+
+
+
+def require_app_access() -> bool:
+    access_code = get_secret_value("APP_ACCESS_CODE", "peds2026")
+    if not access_code:
+        return True
+    if st.session_state.get("app_unlocked", False):
+        return True
+    compact_header()
+    st.markdown("### 系统访问验证")
+    st.caption("请输入访问码后进入训练系统。")
+    code = st.text_input("访问码", type="password", placeholder="请输入访问码")
+    if st.button("进入系统", type="primary"):
+        if code == access_code:
+            st.session_state.app_unlocked = True
+            st.rerun()
+        else:
+            st.error("访问码不正确。")
+    return False
+
+
+def render_action_history(sim: Simulator) -> None:
+    rows = get_action_history_rows(sim)
+    if not rows:
+        st.markdown(
+            "<div class='history-panel'>"
+            "<div class='history-title'>已执行操作</div>"
+            "<div class='history-empty'>当前尚未执行任何操作。每次点击选项后，操作记录会显示在这里。</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        return
+    html_rows = []
+    for row in rows[-12:]:
+        html_rows.append(
+            "<div class='history-item'>"
+            f"<div class='history-time'>{html.escape(str(row.get('时间','')))}</div>"
+            f"<div class='history-action'>{html.escape(str(row.get('操作','')))}</div>"
+            f"<div class='history-result'>{html.escape(str(row.get('结果','')))}</div>"
+            "</div>"
+        )
+    st.markdown(
+        "<div class='history-panel'>"
+        f"<div class='history-title'>已执行操作（{len(rows)}项）</div>"
+        "<div class='history-list'>" + "".join(html_rows) + "</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_admin_page() -> None:
+    compact_header()
+    st.markdown("### 管理员后台")
+    admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
+    if not st.session_state.get("admin_unlocked", False):
+        st.caption("请输入管理员密码后查看和导出训练记录。")
+        pwd = st.text_input("管理员密码", type="password")
+        if st.button("进入管理员后台", type="primary"):
+            if pwd == admin_password:
+                st.session_state.admin_unlocked = True
+                st.rerun()
+            else:
+                st.error("管理员密码不正确。")
+        return
+
+    records = load_result_records()
+    st.info("当前后台为 V1.0 轻量数据留存版：记录保存在应用运行环境文件中，适合试运行和小规模推广；正式多中心长期使用建议升级数据库。")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("训练记录数", len(records))
+    if records:
+        scores = []
+        success_count = 0
+        for r in records:
+            try:
+                scores.append(float(r.get("score", 0)))
+            except Exception:
+                pass
+            if r.get("end_reason") == "success":
+                success_count += 1
+        c2.metric("平均得分", f"{sum(scores)/len(scores):.1f}" if scores else "-")
+        c3.metric("Success次数", success_count)
+    else:
+        c2.metric("平均得分", "-")
+        c3.metric("Success次数", "-")
+
+    st.download_button(
+        "导出全部训练记录 CSV",
+        data=records_to_csv_bytes(records),
+        file_name=f"peds_sim_training_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        disabled=not records,
+    )
+    st.download_button(
+        "导出原始 JSONL 记录",
+        data="\n".join(json.dumps(r, ensure_ascii=False) for r in records).encode("utf-8"),
+        file_name=f"peds_sim_training_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl",
+        mime="application/json",
+        use_container_width=True,
+        disabled=not records,
+    )
+
+    if records:
+        st.markdown("**最近训练记录**")
+        st.dataframe(list(reversed(records[-200:])), use_container_width=True, hide_index=True)
+    else:
+        st.warning("尚未产生训练记录。完成一次训练后，这里会自动显示。")
 
 
 
@@ -838,6 +1167,8 @@ def render_simulation() -> None:
                                 finalize_if_done()
                                 st.rerun()
 
+            render_action_history(sim)
+
             st.divider()
             c1, c2, c3 = st.columns([1.0, 1.05, 2.25], gap="medium")
             if c1.button(f"时间流逝 {sim.tick_seconds}s", use_container_width=True):
@@ -847,9 +1178,12 @@ def render_simulation() -> None:
 
             if sim.mode != "exam":
                 if c2.button("结束并生成报告", use_container_width=True):
-                    report = sim.build_report()
+                    report = enrich_report(sim.build_report(), end_reason="manual_end")
                     out_dir = RUNS_DIR / st.session_state.session_id
                     json_path, md_path = save_report(report, str(out_dir))
+                    if not st.session_state.get("result_saved", False):
+                        save_result_record(report)
+                        st.session_state.result_saved = True
                     st.session_state.ended = True
                     st.session_state.end_reason = "manual_end"
                     st.session_state.last_report = report
@@ -861,10 +1195,12 @@ def render_simulation() -> None:
 def render_report() -> None:
     report = st.session_state.last_report
     if not report:
-        report = st.session_state.active_simulator.build_report()
+        report = enrich_report(st.session_state.active_simulator.build_report(), end_reason=st.session_state.end_reason)
         st.session_state.last_report = report
 
     st.success(f"情景结束：{st.session_state.end_reason}")
+    session_meta = report.get("session", {}) or {}
+    st.caption(f"参与者：{session_meta.get('participant_id', '')}｜单位：{session_meta.get('institution', '')}｜科室：{session_meta.get('department', '')}｜Session：{session_meta.get('session_id', '')}")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("结束时间", f"{report.get('end_time_seconds')}s")
@@ -901,7 +1237,12 @@ def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     inject_compact_css()
     init_session()
+    if not require_app_access():
+        return
     render_sidebar()
+    if st.session_state.page == "管理员后台":
+        render_admin_page()
+        return
     if st.session_state.active_simulator is None:
         render_intro()
     else:
