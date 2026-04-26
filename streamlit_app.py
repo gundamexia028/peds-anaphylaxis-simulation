@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.0 promotion-ready
+儿科护理急救动态分支虚拟仿真训练平台｜V1.1 database-ready
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -12,6 +12,7 @@
 - 每次开始/重置模拟时自动随机生成年龄与体重：年龄 2-12 岁，体重 10-35 kg。
 - 按用户确认的14项评分细则校准最佳时间窗：总分20分。
 - V1.0新增：访问码、单位/科室/参与者编号、自动保存结果、管理员导出CSV、操作历史即时显示。
+- V1.1新增：接入Supabase云端数据库，训练结束后自动写入training_records表，管理员后台可从数据库读取并导出。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -28,7 +29,7 @@ import random
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List, Set
+from typing import Dict, Any, List, Set, Optional, Tuple
 
 import streamlit as st
 
@@ -41,7 +42,7 @@ ROOT = Path(__file__).resolve().parent
 SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
-APP_VERSION = "V1.0 promotion-ready"
+APP_VERSION = "V1.1 database-ready"
 
 
 def list_scenarios() -> Dict[str, Path]:
@@ -236,13 +237,146 @@ def flatten_record(report: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def save_result_record(report: Dict[str, Any]) -> None:
+def _secret_get(*names: str, default: str = "") -> str:
+    """Read secrets from Streamlit Cloud, local secrets.toml, or environment variables.
+
+    Supported formats:
+    - SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_TABLE
+    - [supabase] url / service_role_key / table
+    """
+    for name in names:
+        value = None
+        try:
+            value = st.secrets.get(name, None)  # type: ignore[attr-defined]
+        except Exception:
+            value = None
+        if value is not None:
+            return str(value)
+        value = os.environ.get(name, None)
+        if value is not None:
+            return str(value)
+    try:
+        supa = st.secrets.get("supabase", {})  # type: ignore[attr-defined]
+        if isinstance(supa, dict):
+            for name in names:
+                key = name.lower().replace("supabase_", "")
+                if key in supa and supa[key] is not None:
+                    return str(supa[key])
+    except Exception:
+        pass
+    return default
+
+
+def database_configured() -> bool:
+    return bool(_secret_get("SUPABASE_URL")) and bool(_secret_get("SUPABASE_SERVICE_ROLE_KEY"))
+
+
+@st.cache_resource(show_spinner=False)
+def get_supabase_client_cached(url: str, key: str):
+    from supabase import create_client
+    return create_client(url, key)
+
+
+def get_supabase_client():
+    url = _secret_get("SUPABASE_URL")
+    key = _secret_get("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        return None
+    return get_supabase_client_cached(url, key)
+
+
+def supabase_table_name() -> str:
+    return _secret_get("SUPABASE_TABLE", default="training_records") or "training_records"
+
+
+def infer_epi_dose_status(report: Dict[str, Any]) -> str:
+    issues = "；".join(map(str, report.get("process_safety_issues", []) or []))
+    logs = report.get("log", []) or []
+    if "超过0.5" in issues or "心动过速致心衰" in issues:
+        return "overdose"
+    if "剂量不足" in issues or "操作无效" in issues:
+        return "underdose"
+    for item in logs:
+        if not isinstance(item, dict):
+            continue
+        message = item.get("message", "")
+        if message == "im_epinephrine_overdose":
+            return "overdose"
+        if message == "im_epinephrine_underdose":
+            return "underdose"
+        if message == "im_epinephrine_dose_verified":
+            return "valid"
+    timeline = report.get("key_timeline", {}) or {}
+    if timeline.get("epi_last_dose_mg") is not None:
+        return "valid"
+    return "not_given"
+
+
+def make_database_record(report: Dict[str, Any]) -> Dict[str, Any]:
+    session = report.get("session", {}) or {}
+    patient = report.get("patient", {}) or {}
+    timeline = report.get("key_timeline", {}) or {}
+    logs = report.get("log", []) or []
+    action_logs = [x for x in logs if isinstance(x, dict) and x.get("kind") == "action"]
+    return {
+        "participant_id": str(session.get("participant_id", "anonymous") or "anonymous"),
+        "hospital": str(session.get("institution", "") or ""),
+        "department": str(session.get("department", "") or ""),
+        "mode": str(report.get("mode", "") or ""),
+        "scenario_name": str(report.get("scenario_script_name", report.get("scenario_title", "")) or ""),
+        "scenario_file": str(st.session_state.get("active_scenario_path", "") or ""),
+        "age_years": patient.get("age_years"),
+        "weight_kg": patient.get("weight_kg"),
+        "score": report.get("score"),
+        "raw_score": report.get("raw_score"),
+        "penalties": report.get("penalties"),
+        "final_grade": str(report.get("final_grade", "") or ""),
+        "end_reason": str(report.get("end_reason", "") or ""),
+        "success": str(report.get("end_reason", "")) == "success",
+        "epi_target_dose_mg": timeline.get("epi_target_dose_mg"),
+        "epi_input_dose_mg": timeline.get("epi_last_dose_mg"),
+        "epi_dose_status": infer_epi_dose_status(report),
+        "action_count": len(action_logs),
+        "reassessment_count": timeline.get("reassess_count"),
+        "safety_issues": report.get("process_safety_issues", []) or [],
+        "action_timeline": logs,
+        "full_report": report,
+        "app_version": session.get("app_version", APP_VERSION),
+        "session_id": session.get("session_id", ""),
+        "client_note": "saved_from_streamlit_v1_1",
+    }
+
+
+def save_result_record_local(report: Dict[str, Any]) -> None:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     with RESULTS_INDEX_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(flatten_record(report), ensure_ascii=False) + "\n")
 
 
-def load_result_records() -> List[Dict[str, Any]]:
+def save_result_record_database(report: Dict[str, Any]) -> Tuple[bool, str]:
+    if not database_configured():
+        return False, "数据库未配置：未检测到 SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY。"
+    try:
+        client = get_supabase_client()
+        if client is None:
+            return False, "数据库客户端初始化失败。"
+        table = supabase_table_name()
+        record = make_database_record(report)
+        client.table(table).insert(record).execute()
+        return True, f"已写入云端数据库表：{table}。"
+    except Exception as exc:
+        return False, f"数据库写入失败：{type(exc).__name__}: {exc}"
+
+
+def save_result_record(report: Dict[str, Any]) -> None:
+    """Save result to local JSONL backup and, when configured, Supabase database."""
+    save_result_record_local(report)
+    ok, msg = save_result_record_database(report)
+    st.session_state["last_db_save_ok"] = ok
+    st.session_state["last_db_save_message"] = msg
+
+
+def load_result_records_local() -> List[Dict[str, Any]]:
     if not RESULTS_INDEX_PATH.exists():
         return []
     records: List[Dict[str, Any]] = []
@@ -259,6 +393,61 @@ def load_result_records() -> List[Dict[str, Any]]:
                 continue
     return records
 
+
+def normalize_database_record(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten Supabase rows for the admin table and CSV export."""
+    report = row.get("full_report") or {}
+    timeline = report.get("key_timeline", {}) if isinstance(report, dict) else {}
+    return {
+        "created_at": row.get("created_at", ""),
+        "session_id": row.get("session_id", ""),
+        "participant_id": row.get("participant_id", ""),
+        "institution": row.get("hospital", ""),
+        "department": row.get("department", ""),
+        "mode": row.get("mode", ""),
+        "scenario_script_name": row.get("scenario_name", ""),
+        "scenario_title": report.get("scenario_title", "") if isinstance(report, dict) else "",
+        "age_years": row.get("age_years", ""),
+        "weight_kg": row.get("weight_kg", ""),
+        "end_reason": row.get("end_reason", ""),
+        "end_time_seconds": report.get("end_time_seconds", "") if isinstance(report, dict) else "",
+        "final_grade": row.get("final_grade", ""),
+        "score": row.get("score", ""),
+        "raw_score": row.get("raw_score", ""),
+        "penalties": row.get("penalties", ""),
+        "max_score": report.get("max_score", "") if isinstance(report, dict) else "",
+        "reassess_count": row.get("reassessment_count", timeline.get("reassess_count", "") if isinstance(timeline, dict) else ""),
+        "epi_last_dose_mg": row.get("epi_input_dose_mg", ""),
+        "epi_target_dose_mg": row.get("epi_target_dose_mg", ""),
+        "epi_dose_status": row.get("epi_dose_status", ""),
+        "process_safety_issues": "；".join(map(str, row.get("safety_issues", []) or [])),
+        "critical_missing": "；".join(map(str, report.get("critical_missing", []) or [])) if isinstance(report, dict) else "",
+        "action_count": row.get("action_count", ""),
+        "app_version": row.get("app_version", APP_VERSION),
+        "storage_source": "supabase",
+    }
+
+
+def load_result_records_database(limit: int = 10000) -> Tuple[List[Dict[str, Any]], str]:
+    if not database_configured():
+        return [], "数据库未配置。"
+    try:
+        client = get_supabase_client()
+        if client is None:
+            return [], "数据库客户端初始化失败。"
+        table = supabase_table_name()
+        response = client.table(table).select("*").order("created_at", desc=True).limit(limit).execute()
+        data = response.data or []
+        return [normalize_database_record(x) for x in data if isinstance(x, dict)], f"已从云端数据库读取 {len(data)} 条记录。"
+    except Exception as exc:
+        return [], f"数据库读取失败：{type(exc).__name__}: {exc}"
+
+
+def load_result_records() -> List[Dict[str, Any]]:
+    db_records, _ = load_result_records_database()
+    if db_records:
+        return list(reversed(db_records))
+    return load_result_records_local()
 
 def records_to_csv_bytes(records: List[Dict[str, Any]]) -> bytes:
     if not records:
@@ -350,7 +539,7 @@ def finalize_if_done() -> None:
 
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.0 控制台")
+    st.sidebar.title("V1.1 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -894,7 +1083,7 @@ def render_intro() -> None:
     with left:
         st.markdown(
             """
-            **V1.0 推广试运行版目标**
+            **V1.1 云端数据库版目标**
 
             - 把原有 Python 动态分支引擎封装成网页端操作界面；
             - 时间/分级/得分/复评移至左侧病例下方，避免占用顶部横向空间；
@@ -905,15 +1094,16 @@ def render_intro() -> None:
             - 肾上腺素目标剂量会随随机体重自动变化；
             - 增加参与者编号、单位/医院、科室/病区字段；
             - 每次结束自动保存训练结果，管理员后台可导出 CSV；
-            - 右侧选项下方实时显示“已执行操作”，方便受试者确认自己的操作路径。
+            - 右侧选项下方实时显示“已执行操作”，方便受试者确认自己的操作路径；
+            - 训练结束后优先写入 Supabase 云端数据库 training_records 表，管理员后台优先读取云端记录。
             """
         )
     with right:
         st.container(border=True).markdown(
             """
             **当前版本定位**  
-            V1.0 为线上推广试运行版：可通过网页访问、完成训练、自动保存结果，并在管理员后台导出 CSV。  
-            正式多中心长期运行前，建议进一步升级为数据库存储和独立账号权限。
+            V1.1 为云端数据库试运行版：可通过网页访问、完成训练、自动保存到 Supabase，并在管理员后台导出 CSV。  
+            正式多中心长期运行前，建议进一步完善独立账号权限、数据字典和伦理/知情同意材料。
             """
         )
 
@@ -982,8 +1172,18 @@ def render_admin_page() -> None:
                 st.error("管理员密码不正确。")
         return
 
-    records = load_result_records()
-    st.info("当前后台为 V1.0 轻量数据留存版：记录保存在应用运行环境文件中，适合试运行和小规模推广；正式多中心长期使用建议升级数据库。")
+    db_records, db_message = load_result_records_database()
+    local_records = load_result_records_local()
+    records = list(reversed(db_records)) if db_records else local_records
+    if database_configured():
+        if db_records:
+            st.success("V1.1 云端数据库已连接：" + db_message)
+        else:
+            st.warning("V1.1 已配置云端数据库，但当前未读取到记录或读取失败：" + db_message)
+    else:
+        st.info("当前未配置 Supabase 云端数据库，系统将仅显示本地备用记录。")
+    if local_records and db_records:
+        st.caption(f"本地备用记录：{len(local_records)} 条；当前后台优先显示云端数据库记录。")
     c1, c2, c3 = st.columns(3)
     c1.metric("训练记录数", len(records))
     if records:
@@ -1201,6 +1401,11 @@ def render_report() -> None:
     st.success(f"情景结束：{st.session_state.end_reason}")
     session_meta = report.get("session", {}) or {}
     st.caption(f"参与者：{session_meta.get('participant_id', '')}｜单位：{session_meta.get('institution', '')}｜科室：{session_meta.get('department', '')}｜Session：{session_meta.get('session_id', '')}")
+    if st.session_state.get("last_db_save_message"):
+        if st.session_state.get("last_db_save_ok"):
+            st.success(st.session_state.get("last_db_save_message"))
+        else:
+            st.warning(st.session_state.get("last_db_save_message"))
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("结束时间", f"{report.get('end_time_seconds')}s")

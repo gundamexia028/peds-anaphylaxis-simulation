@@ -70,3 +70,18 @@ peds_web_v1_0_promote_ready/
 ├─ README.md
 └─ .gitignore
 ```
+
+
+## V1.1 Supabase 数据库配置
+
+在 Streamlit Cloud 的 App settings → Secrets 中添加：
+
+```toml
+APP_ACCESS_CODE = "peds2026"
+ADMIN_PASSWORD = "admin2026"
+SUPABASE_URL = "https://your-project-ref.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY = "your-service-role-key"
+SUPABASE_TABLE = "training_records"
+```
+
+注意：`SUPABASE_SERVICE_ROLE_KEY` 仅可放在 Streamlit Secrets 中，不能写入 GitHub 仓库，不能截图公开。
