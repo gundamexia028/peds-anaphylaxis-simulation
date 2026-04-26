@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.1.1 export-enhanced
+儿科护理急救动态分支虚拟仿真训练平台｜V1.1.2 research-ready
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -14,6 +14,7 @@
 - V1.0新增：访问码、单位/科室/参与者编号、自动保存结果、管理员导出CSV、操作历史即时显示。
 - V1.1新增：接入Supabase云端数据库，训练结束后自动写入training_records表，管理员后台可从数据库读取并导出。
 - V1.1.1新增：管理员后台增强导出：汇总CSV、操作明细CSV、完整JSONL；关键操作时间点和剂量/错误指标展开为独立字段。
+- V1.1.2新增：多中心/多层级课题字段，登录登记界面居中加宽，版本说明收纳到右上角。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -44,7 +45,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.1.1 export-enhanced"
+APP_VERSION = "V1.1.2 research-ready"
 
 
 def list_scenarios() -> Dict[str, Path]:
@@ -100,7 +101,20 @@ def init_session() -> None:
     defaults = {
         "participant_id": "",
         "institution": "",
+        "campus": "",
         "department": "",
+        "department_type": "",
+        "nurse_level": "",
+        "years_experience": 0.0,
+        "professional_title": "",
+        "education_level": "",
+        "prior_anaphylaxis_training": "",
+        "prior_simulation_experience": "",
+        "real_case_experience": "",
+        "training_batch": "",
+        "assessment_phase": "基线评估",
+        "attempt_no": 1,
+        "profile_completed": False,
         "app_unlocked": False,
         "admin_unlocked": False,
         "page": "训练系统",
@@ -194,9 +208,41 @@ def build_session_metadata(end_reason: str = "") -> Dict[str, Any]:
         "session_id": st.session_state.get("session_id", ""),
         "participant_id": st.session_state.get("participant_id", "") or "anonymous",
         "institution": st.session_state.get("institution", ""),
+        "campus": st.session_state.get("campus", ""),
         "department": st.session_state.get("department", ""),
+        "department_type": st.session_state.get("department_type", ""),
+        "nurse_level": st.session_state.get("nurse_level", ""),
+        "years_experience": st.session_state.get("years_experience", ""),
+        "professional_title": st.session_state.get("professional_title", ""),
+        "education_level": st.session_state.get("education_level", ""),
+        "prior_anaphylaxis_training": st.session_state.get("prior_anaphylaxis_training", ""),
+        "prior_simulation_experience": st.session_state.get("prior_simulation_experience", ""),
+        "real_case_experience": st.session_state.get("real_case_experience", ""),
+        "training_batch": st.session_state.get("training_batch", ""),
+        "assessment_phase": st.session_state.get("assessment_phase", ""),
+        "attempt_no": st.session_state.get("attempt_no", ""),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "end_reason": end_reason,
+    }
+
+
+def research_metadata_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
+    """Fields used for multi-campus, multi-level research exports."""
+    return {
+        "institution": session.get("institution", ""),
+        "campus": session.get("campus", ""),
+        "department": session.get("department", ""),
+        "department_type": session.get("department_type", ""),
+        "nurse_level": session.get("nurse_level", ""),
+        "years_experience": session.get("years_experience", ""),
+        "professional_title": session.get("professional_title", ""),
+        "education_level": session.get("education_level", ""),
+        "prior_anaphylaxis_training": session.get("prior_anaphylaxis_training", ""),
+        "prior_simulation_experience": session.get("prior_simulation_experience", ""),
+        "real_case_experience": session.get("real_case_experience", ""),
+        "training_batch": session.get("training_batch", ""),
+        "assessment_phase": session.get("assessment_phase", ""),
+        "attempt_no": session.get("attempt_no", ""),
     }
 
 
@@ -217,8 +263,7 @@ def flatten_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": session.get("created_at", ""),
         "session_id": session.get("session_id", ""),
         "participant_id": session.get("participant_id", ""),
-        "institution": session.get("institution", ""),
-        "department": session.get("department", ""),
+        **research_metadata_from_session(session),
         "mode": report.get("mode", ""),
         "scenario_script_name": report.get("scenario_script_name", ""),
         "scenario_title": report.get("scenario_title", ""),
@@ -346,7 +391,7 @@ def make_database_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "full_report": report,
         "app_version": session.get("app_version", APP_VERSION),
         "session_id": session.get("session_id", ""),
-        "client_note": "saved_from_streamlit_v1_1_1_export_enhanced",
+        "client_note": "saved_from_streamlit_v1_1_2_research_ready",
     }
 
 
@@ -589,7 +634,19 @@ def full_report_from_database_row(row: Dict[str, Any]) -> Dict[str, Any]:
         session.setdefault("session_id", row.get("session_id", ""))
         session.setdefault("participant_id", row.get("participant_id", ""))
         session.setdefault("institution", row.get("hospital", ""))
+        session.setdefault("campus", "")
         session.setdefault("department", row.get("department", ""))
+        session.setdefault("department_type", "")
+        session.setdefault("nurse_level", "")
+        session.setdefault("years_experience", "")
+        session.setdefault("professional_title", "")
+        session.setdefault("education_level", "")
+        session.setdefault("prior_anaphylaxis_training", "")
+        session.setdefault("prior_simulation_experience", "")
+        session.setdefault("real_case_experience", "")
+        session.setdefault("training_batch", "")
+        session.setdefault("assessment_phase", "")
+        session.setdefault("attempt_no", "")
         session.setdefault("app_version", row.get("app_version", APP_VERSION))
     report.setdefault("mode", row.get("mode", ""))
     report.setdefault("scenario_script_name", row.get("scenario_name", ""))
@@ -622,8 +679,7 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
         "created_at": session.get("created_at", ""),
         "session_id": session.get("session_id", ""),
         "participant_id": session.get("participant_id", ""),
-        "institution": session.get("institution", ""),
-        "department": session.get("department", ""),
+        **research_metadata_from_session(session),
         "mode": report.get("mode", ""),
         "scenario_script_name": report.get("scenario_script_name", ""),
         "scenario_title": report.get("scenario_title", ""),
@@ -714,8 +770,7 @@ def report_to_action_detail_records(report: Dict[str, Any], storage_source: str 
             "created_at": session.get("created_at", ""),
             "session_id": session.get("session_id", ""),
             "participant_id": session.get("participant_id", ""),
-            "institution": session.get("institution", ""),
-            "department": session.get("department", ""),
+            **research_metadata_from_session(session),
             "mode": report.get("mode", ""),
             "scenario_script_name": report.get("scenario_script_name", ""),
             "age_years": patient.get("age_years", ""),
@@ -826,8 +881,163 @@ def finalize_if_done() -> None:
         st.session_state.last_report_paths = (json_path, md_path)
 
 
+def profile_required_missing() -> List[str]:
+    required = {
+        "participant_id": "参与者编号",
+        "institution": "单位/医院",
+        "campus": "院区/中心",
+        "department": "科室/病区",
+        "nurse_level": "护理层级",
+        "years_experience": "工作年限",
+        "prior_anaphylaxis_training": "既往过敏反应培训",
+        "assessment_phase": "评估阶段",
+    }
+    missing = []
+    for key, label in required.items():
+        value = st.session_state.get(key, "")
+        if value is None or str(value).strip() == "":
+            missing.append(label)
+    return missing
+
+
+def render_version_corner() -> None:
+    st.markdown(
+        f"<div class='version-corner'>版本：{html.escape(APP_VERSION)}｜仅用于护理教学、培训与科研</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_participant_entry_page() -> None:
+    """Centered, wide research-registration page before entering the simulator."""
+    render_version_corner()
+    st.markdown(
+        f"""
+        <div class='login-hero'>
+            <div class='login-title'>{html.escape(APP_TITLE)}</div>
+            <div class='login-subtitle'>多中心 · 多院区 · 多护理层级｜药物诱发过敏反应识别与初始处置能力评价</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    outer_left, center, outer_right = st.columns([0.12, 0.76, 0.12])
+    with center:
+        st.markdown(
+            "<div class='login-card-title'>受试者信息登记</div>"
+            "<div class='login-card-desc'>请先完成基本信息登记。以下信息将写入训练报告和云端数据库，用于后续多院区、多层级课题分析。</div>",
+            unsafe_allow_html=True,
+        )
+
+        with st.form("participant_profile_form", clear_on_submit=False):
+            st.markdown("##### 基本身份信息")
+            c1, c2, c3 = st.columns([1, 1, 1], gap="large")
+            participant_id = c1.text_input("参与者编号（必填）", value=st.session_state.participant_id, placeholder="例如 P001 / N1-001")
+            institution = c2.text_input("单位/医院（必填）", value=st.session_state.institution, placeholder="例如 XX儿童医院")
+            campus = c3.text_input("院区/中心（必填）", value=st.session_state.campus, placeholder="例如 主院区 / 天府院区")
+
+            c4, c5 = st.columns([1, 1], gap="large")
+            department = c4.text_input("科室/病区（必填）", value=st.session_state.department, placeholder="例如 儿科呼吸免疫病区")
+            department_type = c5.selectbox(
+                "科室类型",
+                ["", "儿科普通病区", "儿科急诊", "儿科ICU", "呼吸专科病区", "综合儿科", "门诊/输液区", "其他"],
+                index=(["", "儿科普通病区", "儿科急诊", "儿科ICU", "呼吸专科病区", "综合儿科", "门诊/输液区", "其他"].index(st.session_state.department_type)
+                       if st.session_state.department_type in ["", "儿科普通病区", "儿科急诊", "儿科ICU", "呼吸专科病区", "综合儿科", "门诊/输液区", "其他"] else 0),
+            )
+
+            st.markdown("##### 护理层级与背景")
+            n1, n2, n3 = st.columns([1, 1, 1], gap="large")
+            nurse_levels = ["", "N0/CN0", "N1/CN1", "N2/CN2", "N3/CN3", "N4/CN4", "护士长/护理管理者", "其他"]
+            nurse_level = n1.selectbox(
+                "护理层级（必填）",
+                nurse_levels,
+                index=nurse_levels.index(st.session_state.nurse_level) if st.session_state.nurse_level in nurse_levels else 0,
+            )
+            years_experience = n2.number_input(
+                "工作年限（年，必填）",
+                min_value=0.0,
+                max_value=50.0,
+                value=float(st.session_state.years_experience or 0.0),
+                step=0.5,
+                format="%.1f",
+            )
+            titles = ["", "护士", "护师", "主管护师", "副主任护师", "主任护师", "其他"]
+            professional_title = n3.selectbox(
+                "职称",
+                titles,
+                index=titles.index(st.session_state.professional_title) if st.session_state.professional_title in titles else 0,
+            )
+
+            n4, n5, n6 = st.columns([1, 1, 1], gap="large")
+            edu_options = ["", "中专", "大专", "本科", "硕士及以上", "其他"]
+            education_level = n4.selectbox(
+                "最高学历",
+                edu_options,
+                index=edu_options.index(st.session_state.education_level) if st.session_state.education_level in edu_options else 0,
+            )
+            yn_options = ["", "是", "否", "不确定"]
+            prior_anaphylaxis_training = n5.selectbox(
+                "是否接受过过敏反应/过敏性休克培训（必填）",
+                yn_options,
+                index=yn_options.index(st.session_state.prior_anaphylaxis_training) if st.session_state.prior_anaphylaxis_training in yn_options else 0,
+            )
+            prior_simulation_experience = n6.selectbox(
+                "是否参加过模拟/虚拟仿真培训",
+                yn_options,
+                index=yn_options.index(st.session_state.prior_simulation_experience) if st.session_state.prior_simulation_experience in yn_options else 0,
+            )
+
+            n7, n8, n9 = st.columns([1, 1, 1], gap="large")
+            real_case_experience = n7.selectbox(
+                "是否处理过真实过敏反应病例",
+                yn_options,
+                index=yn_options.index(st.session_state.real_case_experience) if st.session_state.real_case_experience in yn_options else 0,
+            )
+            training_batch = n8.text_input("培训批次/项目编号", value=st.session_state.training_batch, placeholder="例如 2026-B01")
+            phase_options = ["基线评估", "训练后评估", "随访评估", "正式考核", "试运行测试"]
+            assessment_phase = n9.selectbox(
+                "评估阶段（必填）",
+                phase_options,
+                index=phase_options.index(st.session_state.assessment_phase) if st.session_state.assessment_phase in phase_options else 0,
+            )
+
+            attempt_no = st.number_input(
+                "第几次尝试/测试",
+                min_value=1,
+                max_value=20,
+                value=int(st.session_state.attempt_no or 1),
+                step=1,
+            )
+
+            submitted = st.form_submit_button("保存信息并进入训练系统", type="primary", use_container_width=True)
+
+        if submitted:
+            st.session_state.participant_id = participant_id.strip()
+            st.session_state.institution = institution.strip()
+            st.session_state.campus = campus.strip()
+            st.session_state.department = department.strip()
+            st.session_state.department_type = department_type.strip()
+            st.session_state.nurse_level = nurse_level.strip()
+            st.session_state.years_experience = years_experience
+            st.session_state.professional_title = professional_title.strip()
+            st.session_state.education_level = education_level.strip()
+            st.session_state.prior_anaphylaxis_training = prior_anaphylaxis_training.strip()
+            st.session_state.prior_simulation_experience = prior_simulation_experience.strip()
+            st.session_state.real_case_experience = real_case_experience.strip()
+            st.session_state.training_batch = training_batch.strip()
+            st.session_state.assessment_phase = assessment_phase.strip()
+            st.session_state.attempt_no = int(attempt_no)
+
+            missing = profile_required_missing()
+            if missing:
+                st.error("请先完整填写：" + "、".join(missing))
+            else:
+                st.session_state.profile_completed = True
+                st.success("登记信息已保存，正在进入训练系统。")
+                st.rerun()
+
+
 def render_sidebar() -> None:
-    st.sidebar.title("V1.1.1 控制台")
+    st.sidebar.title("V1.1.2 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -838,22 +1048,22 @@ def render_sidebar() -> None:
         st.sidebar.caption("管理员后台用于查看并导出训练记录。")
         return
 
-    st.sidebar.subheader("受试者信息")
-    st.session_state.participant_id = st.sidebar.text_input(
-        "参与者编号（必填）",
-        value=st.session_state.participant_id,
-        placeholder="例如 P01 / N1-001",
+    if not st.session_state.get("profile_completed", False):
+        st.sidebar.info("请先在主界面完成受试者信息登记。")
+        return
+
+    st.sidebar.subheader("受试者摘要")
+    st.sidebar.caption(
+        f"编号：{st.session_state.participant_id}  \n"
+        f"单位：{st.session_state.institution}｜{st.session_state.campus}  \n"
+        f"科室：{st.session_state.department}  \n"
+        f"层级：{st.session_state.nurse_level}｜年限：{st.session_state.years_experience}年"
     )
-    st.session_state.institution = st.sidebar.text_input(
-        "单位/医院（必填）",
-        value=st.session_state.institution,
-        placeholder="例如 XX儿童医院",
-    )
-    st.session_state.department = st.sidebar.text_input(
-        "科室/病区（必填）",
-        value=st.session_state.department,
-        placeholder="例如 儿科呼吸免疫病区",
-    )
+    if st.sidebar.button("重新填写受试者信息", use_container_width=True):
+        st.session_state.profile_completed = False
+        st.session_state.active_simulator = None
+        st.session_state.ended = False
+        st.rerun()
 
     st.sidebar.subheader("训练设置")
     scenarios = list_scenarios()
@@ -883,15 +1093,9 @@ def render_sidebar() -> None:
     )
 
     if st.sidebar.button("开始/重置本次模拟", type="primary", use_container_width=True):
-        missing = []
-        if not st.session_state.participant_id.strip():
-            missing.append("参与者编号")
-        if not st.session_state.institution.strip():
-            missing.append("单位/医院")
-        if not st.session_state.department.strip():
-            missing.append("科室/病区")
+        missing = profile_required_missing()
         if missing:
-            st.sidebar.error("请先填写：" + "、".join(missing))
+            st.sidebar.error("请先完整填写：" + "、".join(missing))
         else:
             start_simulation(
                 scenario_path=scenarios[st.session_state.scenario_label],
@@ -1203,7 +1407,93 @@ def inject_compact_css() -> None:
         div[data-testid="stExpander"] details {
             border-radius: 0.55rem !important;
         }
-        </style>
+        
+        .version-corner {
+            position: fixed;
+            top: 0.55rem;
+            right: 1.15rem;
+            z-index: 999;
+            color: #667085;
+            font-size: 0.76rem;
+            background: rgba(255,255,255,0.92);
+            border: 1px solid #e5e7eb;
+            border-radius: 999px;
+            padding: 0.28rem 0.72rem;
+            box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06);
+        }
+        .login-hero {
+            width: min(1120px, 92vw);
+            margin: 1.2rem auto 0.8rem auto;
+            text-align: center;
+            padding-top: 0.3rem;
+        }
+        .login-title {
+            font-size: 2.05rem;
+            line-height: 1.24;
+            font-weight: 850;
+            color: #0f172a;
+            letter-spacing: -0.02em;
+        }
+        .login-subtitle {
+            margin-top: 0.42rem;
+            color: #475569;
+            font-size: 1.05rem;
+            line-height: 1.45;
+        }
+        .login-card-title {
+            margin-top: 0.35rem;
+            font-size: 1.32rem;
+            line-height: 1.3;
+            font-weight: 820;
+            color: #111827;
+            border: 1px solid #e5e7eb;
+            border-bottom: 0;
+            border-radius: 1rem 1rem 0 0;
+            background: #ffffff;
+            padding: 1.05rem 1.25rem 0.4rem 1.25rem;
+        }
+        .login-card-desc {
+            font-size: 0.94rem;
+            color: #667085;
+            line-height: 1.5;
+            border-left: 1px solid #e5e7eb;
+            border-right: 1px solid #e5e7eb;
+            background: #ffffff;
+            padding: 0 1.25rem 0.8rem 1.25rem;
+            margin-bottom: -0.1rem;
+        }
+        div[data-testid="stForm"] {
+            border: 1px solid #e5e7eb !important;
+            border-top: 0 !important;
+            border-radius: 0 0 1rem 1rem !important;
+            padding: 0.95rem 1.25rem 1.15rem 1.25rem !important;
+            background: #ffffff !important;
+            box-shadow: 0 14px 38px rgba(15, 23, 42, 0.07) !important;
+        }
+        .access-card {
+            width: min(620px, 92vw);
+            margin: 8vh auto 0 auto;
+            border: 1px solid #e5e7eb;
+            border-radius: 1.1rem;
+            background: #ffffff;
+            padding: 1.6rem 1.7rem;
+            box-shadow: 0 16px 45px rgba(15, 23, 42, 0.08);
+            text-align: center;
+        }
+        .access-card-title {
+            font-size: 1.62rem;
+            font-weight: 850;
+            line-height: 1.25;
+            color: #111827;
+            margin-bottom: 0.38rem;
+        }
+        .access-card-desc {
+            font-size: 0.95rem;
+            color: #667085;
+            line-height: 1.5;
+            margin-bottom: 0.85rem;
+        }
+</style>
         """,
         unsafe_allow_html=True,
     )
@@ -1366,36 +1656,33 @@ def render_patient_status(sim: Simulator, scenario: Dict[str, Any], changes: Dic
 
 def render_intro() -> None:
     compact_header()
-    st.info("请先在左侧设置参与者编号、模式和情景脚本，然后点击“开始/重置本次模拟”。")
-    left, right = st.columns([1.1, 1])
-    with left:
-        st.markdown(
-            """
-            **V1.1.1 云端数据库与导出增强版目标**
+    st.success("受试者信息已登记。请在左侧选择运行模式和情景脚本，然后点击“开始/重置本次模拟”。")
 
-            - 把原有 Python 动态分支引擎封装成网页端操作界面；
-            - 时间/分级/得分/复评移至左侧病例下方，避免占用顶部横向空间；
-            - 左侧实时病情区域加宽，并进一步放大病例信息、当前症状和生命体征；
-            - 右侧操作按钮采用统一短标题，不显示冗余解释，并增大按钮高度与字号；
-            - 肌注肾上腺素需要输入总剂量，系统按 0.01 mg/kg 和 0.5 mg 上限判定有效、无效或药物不良事件；
-            - 每次点击“开始/重置本次模拟”时随机生成患儿年龄和体重：年龄 2-12 岁，体重 10-35 kg；
-            - 肾上腺素目标剂量会随随机体重自动变化；
-            - 增加参与者编号、单位/医院、科室/病区字段；
-            - 每次结束自动保存训练结果，管理员后台可导出 CSV；
-            - 右侧选项下方实时显示“已执行操作”，方便受试者确认自己的操作路径；
-            - 训练结束后优先写入 Supabase 云端数据库 training_records 表，管理员后台优先读取云端记录；
-            - 管理员后台支持三类导出：训练汇总CSV、操作明细CSV、完整JSONL。
-            """
-        )
+    left, right = st.columns([1.15, 1], gap="large")
+    with left:
+        st.markdown("#### 当前登记信息")
+        info_rows = [
+            {"项目": "参与者编号", "内容": st.session_state.get("participant_id", "")},
+            {"项目": "单位/医院", "内容": st.session_state.get("institution", "")},
+            {"项目": "院区/中心", "内容": st.session_state.get("campus", "")},
+            {"项目": "科室/病区", "内容": st.session_state.get("department", "")},
+            {"项目": "护理层级", "内容": st.session_state.get("nurse_level", "")},
+            {"项目": "工作年限", "内容": f"{st.session_state.get('years_experience', '')} 年"},
+            {"项目": "评估阶段", "内容": st.session_state.get("assessment_phase", "")},
+            {"项目": "第几次尝试", "内容": st.session_state.get("attempt_no", "")},
+        ]
+        st.dataframe(info_rows, use_container_width=True, hide_index=True)
+
     with right:
         st.container(border=True).markdown(
             """
-            **当前版本定位**  
-            V1.1.1 为云端数据库与导出增强版：可通过网页访问、完成训练、自动保存到 Supabase，并在管理员后台导出汇总CSV、操作明细CSV和完整JSONL。  
-            正式多中心长期运行前，建议进一步完善独立账号权限、数据字典和伦理/知情同意材料。
+            **V1.1.2 研究字段增强版**
+
+            本版用于支撑“多中心/多院区/多护理层级”的课题数据收集。系统会在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
+
+            管理员后台仍支持三类导出：训练汇总CSV、操作明细CSV、完整JSONL。
             """
         )
-
 
 
 def require_app_access() -> bool:
@@ -1404,16 +1691,26 @@ def require_app_access() -> bool:
         return True
     if st.session_state.get("app_unlocked", False):
         return True
-    compact_header()
-    st.markdown("### 系统访问验证")
-    st.caption("请输入访问码后进入训练系统。")
-    code = st.text_input("访问码", type="password", placeholder="请输入访问码")
-    if st.button("进入系统", type="primary"):
-        if code == access_code:
-            st.session_state.app_unlocked = True
-            st.rerun()
-        else:
-            st.error("访问码不正确。")
+
+    render_version_corner()
+    st.markdown(
+        f"""
+        <div class='access-card'>
+            <div class='access-card-title'>进入虚拟仿真训练系统</div>
+            <div class='access-card-desc'>请输入访问码。系统用于儿科护士药物诱发过敏反应识别与初始处置能力评价，不用于临床诊疗决策。</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    left, center, right = st.columns([0.32, 0.36, 0.32])
+    with center:
+        code = st.text_input("访问码", type="password", placeholder="请输入访问码", label_visibility="collapsed")
+        if st.button("进入系统", type="primary", use_container_width=True):
+            if code == access_code:
+                st.session_state.app_unlocked = True
+                st.rerun()
+            else:
+                st.error("访问码不正确。")
     return False
 
 
@@ -1448,7 +1745,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.1.1 数据导出增强版")
+    st.markdown("### 管理员后台｜V1.1.2 多中心研究字段增强版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -1753,7 +2050,11 @@ def render_report() -> None:
 
     st.success(f"情景结束：{st.session_state.end_reason}")
     session_meta = report.get("session", {}) or {}
-    st.caption(f"参与者：{session_meta.get('participant_id', '')}｜单位：{session_meta.get('institution', '')}｜科室：{session_meta.get('department', '')}｜Session：{session_meta.get('session_id', '')}")
+    st.caption(
+        f"参与者：{session_meta.get('participant_id', '')}｜单位：{session_meta.get('institution', '')}"
+        f"｜院区：{session_meta.get('campus', '')}｜科室：{session_meta.get('department', '')}"
+        f"｜层级：{session_meta.get('nurse_level', '')}｜Session：{session_meta.get('session_id', '')}"
+    )
     if st.session_state.get("last_db_save_message"):
         if st.session_state.get("last_db_save_ok"):
             st.success(st.session_state.get("last_db_save_message"))
@@ -1800,6 +2101,9 @@ def main() -> None:
     render_sidebar()
     if st.session_state.page == "管理员后台":
         render_admin_page()
+        return
+    if not st.session_state.get("profile_completed", False):
+        render_participant_entry_page()
         return
     if st.session_state.active_simulator is None:
         render_intro()
