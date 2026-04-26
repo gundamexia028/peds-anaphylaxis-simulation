@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.1 database-ready
+儿科护理急救动态分支虚拟仿真训练平台｜V1.1.1 export-enhanced
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -13,6 +13,7 @@
 - 按用户确认的14项评分细则校准最佳时间窗：总分20分。
 - V1.0新增：访问码、单位/科室/参与者编号、自动保存结果、管理员导出CSV、操作历史即时显示。
 - V1.1新增：接入Supabase云端数据库，训练结束后自动写入training_records表，管理员后台可从数据库读取并导出。
+- V1.1.1新增：管理员后台增强导出：汇总CSV、操作明细CSV、完整JSONL；关键操作时间点和剂量/错误指标展开为独立字段。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -42,7 +43,8 @@ ROOT = Path(__file__).resolve().parent
 SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
-APP_VERSION = "V1.1 database-ready"
+RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
+APP_VERSION = "V1.1.1 export-enhanced"
 
 
 def list_scenarios() -> Dict[str, Path]:
@@ -121,6 +123,7 @@ def init_session() -> None:
         "last_dose_feedback": "",
         "last_dose_feedback_level": "",
         "result_saved": False,
+        "admin_export_view": "训练汇总",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -343,7 +346,7 @@ def make_database_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "full_report": report,
         "app_version": session.get("app_version", APP_VERSION),
         "session_id": session.get("session_id", ""),
-        "client_note": "saved_from_streamlit_v1_1",
+        "client_note": "saved_from_streamlit_v1_1_1_export_enhanced",
     }
 
 
@@ -351,6 +354,8 @@ def save_result_record_local(report: Dict[str, Any]) -> None:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     with RESULTS_INDEX_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(flatten_record(report), ensure_ascii=False) + "\n")
+    with RESULTS_FULL_REPORTS_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(report, ensure_ascii=False, default=str) + "\n")
 
 
 def save_result_record_database(report: Dict[str, Any]) -> Tuple[bool, str]:
@@ -395,40 +400,21 @@ def load_result_records_local() -> List[Dict[str, Any]]:
 
 
 def normalize_database_record(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Flatten Supabase rows for the admin table and CSV export."""
-    report = row.get("full_report") or {}
-    timeline = report.get("key_timeline", {}) if isinstance(report, dict) else {}
-    return {
-        "created_at": row.get("created_at", ""),
-        "session_id": row.get("session_id", ""),
-        "participant_id": row.get("participant_id", ""),
-        "institution": row.get("hospital", ""),
-        "department": row.get("department", ""),
-        "mode": row.get("mode", ""),
-        "scenario_script_name": row.get("scenario_name", ""),
-        "scenario_title": report.get("scenario_title", "") if isinstance(report, dict) else "",
-        "age_years": row.get("age_years", ""),
-        "weight_kg": row.get("weight_kg", ""),
-        "end_reason": row.get("end_reason", ""),
-        "end_time_seconds": report.get("end_time_seconds", "") if isinstance(report, dict) else "",
-        "final_grade": row.get("final_grade", ""),
-        "score": row.get("score", ""),
-        "raw_score": row.get("raw_score", ""),
-        "penalties": row.get("penalties", ""),
-        "max_score": report.get("max_score", "") if isinstance(report, dict) else "",
-        "reassess_count": row.get("reassessment_count", timeline.get("reassess_count", "") if isinstance(timeline, dict) else ""),
-        "epi_last_dose_mg": row.get("epi_input_dose_mg", ""),
-        "epi_target_dose_mg": row.get("epi_target_dose_mg", ""),
-        "epi_dose_status": row.get("epi_dose_status", ""),
-        "process_safety_issues": "；".join(map(str, row.get("safety_issues", []) or [])),
-        "critical_missing": "；".join(map(str, report.get("critical_missing", []) or [])) if isinstance(report, dict) else "",
-        "action_count": row.get("action_count", ""),
-        "app_version": row.get("app_version", APP_VERSION),
-        "storage_source": "supabase",
-    }
+    """Flatten Supabase rows into an expanded one-row-per-session summary."""
+    report = full_report_from_database_row(row)
+    summary = report_to_summary_record(report, storage_source="supabase")
+    # Prefer database-level fields when present because they are indexed and stable.
+    summary["created_at"] = row.get("created_at", summary.get("created_at", ""))
+    summary["session_id"] = row.get("session_id", summary.get("session_id", ""))
+    summary["participant_id"] = row.get("participant_id", summary.get("participant_id", ""))
+    summary["institution"] = row.get("hospital", summary.get("institution", ""))
+    summary["department"] = row.get("department", summary.get("department", ""))
+    summary["app_version"] = row.get("app_version", summary.get("app_version", APP_VERSION))
+    return summary
 
 
-def load_result_records_database(limit: int = 10000) -> Tuple[List[Dict[str, Any]], str]:
+def load_result_rows_database(limit: int = 10000) -> Tuple[List[Dict[str, Any]], str]:
+    """Return raw Supabase rows, preserving full_report JSON for enhanced exports."""
     if not database_configured():
         return [], "数据库未配置。"
     try:
@@ -438,16 +424,58 @@ def load_result_records_database(limit: int = 10000) -> Tuple[List[Dict[str, Any
         table = supabase_table_name()
         response = client.table(table).select("*").order("created_at", desc=True).limit(limit).execute()
         data = response.data or []
-        return [normalize_database_record(x) for x in data if isinstance(x, dict)], f"已从云端数据库读取 {len(data)} 条记录。"
+        rows = [x for x in data if isinstance(x, dict)]
+        return rows, f"已从云端数据库读取 {len(rows)} 条记录。"
     except Exception as exc:
         return [], f"数据库读取失败：{type(exc).__name__}: {exc}"
+
+
+def load_result_records_database(limit: int = 10000) -> Tuple[List[Dict[str, Any]], str]:
+    rows, message = load_result_rows_database(limit=limit)
+    if not rows:
+        return [], message
+    return [normalize_database_record(x) for x in rows], message
+
+
+def load_full_reports_local() -> List[Dict[str, Any]]:
+    if not RESULTS_FULL_REPORTS_PATH.exists():
+        return []
+    reports: List[Dict[str, Any]] = []
+    with RESULTS_FULL_REPORTS_PATH.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    reports.append(obj)
+            except Exception:
+                continue
+    return reports
 
 
 def load_result_records() -> List[Dict[str, Any]]:
     db_records, _ = load_result_records_database()
     if db_records:
         return list(reversed(db_records))
+    full_local = load_full_reports_local()
+    if full_local:
+        return build_summary_records_from_reports(full_local, storage_source="local")
     return load_result_records_local()
+
+def _json_compact(value: Any) -> str:
+    """Compact JSON string for CSV cells when a value is a list/dict."""
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
+
+
+def _csv_ready_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: _json_compact(v) for k, v in row.items()}
+
 
 def records_to_csv_bytes(records: List[Dict[str, Any]]) -> bytes:
     if not records:
@@ -460,8 +488,268 @@ def records_to_csv_bytes(records: List[Dict[str, Any]]) -> bytes:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(records)
+    writer.writerows([_csv_ready_row(r) for r in records])
     return buf.getvalue().encode("utf-8-sig")
+
+
+def records_to_jsonl_bytes(records: List[Dict[str, Any]]) -> bytes:
+    if not records:
+        return b""
+    return "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in records).encode("utf-8")
+
+
+ACTION_LABELS_CN = {
+    "stop_infusion": "停止输液/停药",
+    "call_help": "呼救",
+    "high_flow_oxygen": "给氧",
+    "shock_position": "体位管理",
+    "abc_assess": "ABC评估",
+    "connect_monitor": "连接监护",
+    "check_bp": "测血压/灌注",
+    "im_epinephrine": "肌注肾上腺素",
+    "fluid_bolus": "静脉补液",
+    "nebulized_epinephrine": "雾化肾上腺素",
+    "bronchodilator": "雾化支气管扩张剂",
+    "reassess": "复评记录",
+    "family_explain": "家属沟通",
+    "sbar_handoff": "SBAR交接",
+    "antihistamine_iv": "静脉抗组胺药",
+    "steroid": "给予糖皮质激素",
+    "continue_infusion": "继续输液",
+    "sedation": "给予镇静药",
+    "remove_iv": "拔除静脉通路",
+    "im_epinephrine_dose_verified": "肌注肾上腺素剂量确认",
+    "im_epinephrine_underdose": "肌注肾上腺素剂量不足",
+    "im_epinephrine_overdose": "肌注肾上腺素过量",
+}
+
+KEY_ACTION_COLUMNS = [
+    ("stop_infusion_time", "stop_infusion"),
+    ("call_help_time", "call_help"),
+    ("oxygen_time", "oxygen"),
+    ("monitor_time", "monitor"),
+    ("bp_check_time", "bp_check"),
+    ("epi_time", "epi_im"),
+    ("fluid_time", "fluid"),
+    ("family_communication_time", "family_communication"),
+    ("sbar_time", "sbar_handoff"),
+]
+
+
+def _get_logs(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    logs = report.get("log", []) or []
+    return [x for x in logs if isinstance(x, dict)]
+
+
+def _first_log_time(report: Dict[str, Any], message: str) -> Any:
+    for entry in _get_logs(report):
+        if entry.get("kind") == "action" and entry.get("message") == message:
+            return entry.get("t")
+    return None
+
+
+def _action_attempt_count(report: Dict[str, Any], message: str) -> int:
+    return sum(1 for entry in _get_logs(report) if entry.get("kind") == "action" and entry.get("message") == message)
+
+
+def _timeline_value(report: Dict[str, Any], key: str) -> Any:
+    timeline = report.get("key_timeline", {}) or {}
+    return timeline.get(key, None)
+
+
+def _safe_number(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _yes_no(value: bool) -> str:
+    return "是" if bool(value) else "否"
+
+
+def _issue_text(report: Dict[str, Any]) -> str:
+    return "；".join(map(str, report.get("process_safety_issues", []) or []))
+
+
+def _missing_text(report: Dict[str, Any]) -> str:
+    return "；".join(map(str, report.get("critical_missing", []) or []))
+
+
+def full_report_from_database_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    report = row.get("full_report") or {}
+    if not isinstance(report, dict):
+        report = {}
+    # Merge database-level fields back when older reports lack session metadata.
+    session = report.setdefault("session", {})
+    if isinstance(session, dict):
+        session.setdefault("created_at", row.get("created_at", ""))
+        session.setdefault("session_id", row.get("session_id", ""))
+        session.setdefault("participant_id", row.get("participant_id", ""))
+        session.setdefault("institution", row.get("hospital", ""))
+        session.setdefault("department", row.get("department", ""))
+        session.setdefault("app_version", row.get("app_version", APP_VERSION))
+    report.setdefault("mode", row.get("mode", ""))
+    report.setdefault("scenario_script_name", row.get("scenario_name", ""))
+    report.setdefault("end_reason", row.get("end_reason", ""))
+    report.setdefault("score", row.get("score", ""))
+    report.setdefault("raw_score", row.get("raw_score", ""))
+    report.setdefault("penalties", row.get("penalties", ""))
+    report.setdefault("final_grade", row.get("final_grade", ""))
+    patient = report.setdefault("patient", {})
+    if isinstance(patient, dict):
+        patient.setdefault("age_years", row.get("age_years", ""))
+        patient.setdefault("weight_kg", row.get("weight_kg", ""))
+    return report
+
+
+def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supabase") -> Dict[str, Any]:
+    session = report.get("session", {}) or {}
+    patient = report.get("patient", {}) or {}
+    timeline = report.get("key_timeline", {}) or {}
+    final_vitals = report.get("final_vitals", {}) or {}
+    issues = _issue_text(report)
+    missing = _missing_text(report)
+
+    score = _safe_number(report.get("score", 0))
+    max_score = _safe_number(report.get("max_score", 20), 20)
+    epi_time = timeline.get("epi_im", _first_log_time(report, "im_epinephrine"))
+    end_time = report.get("end_time_seconds", "")
+
+    record: Dict[str, Any] = {
+        "created_at": session.get("created_at", ""),
+        "session_id": session.get("session_id", ""),
+        "participant_id": session.get("participant_id", ""),
+        "institution": session.get("institution", ""),
+        "department": session.get("department", ""),
+        "mode": report.get("mode", ""),
+        "scenario_script_name": report.get("scenario_script_name", ""),
+        "scenario_title": report.get("scenario_title", ""),
+        "age_years": patient.get("age_years", ""),
+        "weight_kg": patient.get("weight_kg", ""),
+        "end_reason": report.get("end_reason", ""),
+        "success": _yes_no(report.get("end_reason", "") == "success"),
+        "end_time_seconds": end_time,
+        "final_grade": report.get("final_grade", ""),
+        "score": report.get("score", ""),
+        "raw_score": report.get("raw_score", ""),
+        "penalties": report.get("penalties", ""),
+        "max_score": report.get("max_score", ""),
+        "score_percent": round(score / max_score * 100, 1) if max_score else "",
+        "reassess_count": timeline.get("reassess_count", ""),
+        "action_count": sum(1 for e in _get_logs(report) if e.get("kind") == "action" and e.get("message") != "penalty"),
+        "wrong_action_count": sum(1 for e in _get_logs(report) if e.get("kind") == "action" and e.get("message") == "penalty"),
+        "harmful_action_count": sum(_action_attempt_count(report, x) for x in ["continue_infusion", "sedation", "remove_iv", "im_epinephrine_overdose"]),
+        "epi_target_dose_mg": timeline.get("epi_target_dose_mg", ""),
+        "epi_input_dose_mg": timeline.get("epi_last_dose_mg", ""),
+        "epi_dose_status": infer_epi_dose_status(report),
+        "epi_delay_seconds": epi_time if epi_time is not None else "",
+        "underdose_epi": _yes_no("剂量不足" in issues or _action_attempt_count(report, "im_epinephrine_underdose") > 0),
+        "overdose_epi": _yes_no("超过0.5" in issues or _action_attempt_count(report, "im_epinephrine_overdose") > 0),
+        "final_spo2": final_vitals.get("SpO2", ""),
+        "final_hr": final_vitals.get("HR", ""),
+        "final_rr": final_vitals.get("RR", ""),
+        "final_sbp": final_vitals.get("SBP", ""),
+        "final_dbp": final_vitals.get("DBP", ""),
+        "process_safety_issues": issues,
+        "critical_missing": missing,
+        "completed_key_steps": "",
+        "total_action_sequence": "",
+        "app_version": session.get("app_version", APP_VERSION),
+        "storage_source": storage_source,
+    }
+
+    # Key timeline columns.
+    for column_name, timeline_key in KEY_ACTION_COLUMNS:
+        record[column_name] = timeline.get(timeline_key, "")
+
+    # Extra action-time columns not present in key_timeline.
+    record["abc_assess_time"] = _first_log_time(report, "abc_assess")
+    record["position_time"] = _first_log_time(report, "shock_position")
+    record["nebulized_epinephrine_time"] = _first_log_time(report, "nebulized_epinephrine")
+    record["bronchodilator_time"] = _first_log_time(report, "bronchodilator")
+    reassess_times = [e.get("t") for e in _get_logs(report) if e.get("kind") == "action" and e.get("message") == "reassess"]
+    record["reassessment_first_time"] = reassess_times[0] if len(reassess_times) >= 1 else ""
+    record["reassessment_second_time"] = reassess_times[1] if len(reassess_times) >= 2 else ""
+
+    required_steps = [
+        "stop_infusion_time", "call_help_time", "oxygen_time", "monitor_time", "bp_check_time",
+        "epi_time", "fluid_time", "abc_assess_time", "position_time", "family_communication_time", "sbar_time"
+    ]
+    record["completed_key_steps"] = sum(1 for k in required_steps if record.get(k) not in ("", None))
+
+    sequence = []
+    for entry in _get_logs(report):
+        if entry.get("kind") == "action" and entry.get("message") != "penalty":
+            msg = str(entry.get("message", ""))
+            sequence.append(ACTION_LABELS_CN.get(msg, msg))
+    record["total_action_sequence"] = " → ".join(sequence)
+    return record
+
+
+def report_to_action_detail_records(report: Dict[str, Any], storage_source: str = "supabase") -> List[Dict[str, Any]]:
+    session = report.get("session", {}) or {}
+    patient = report.get("patient", {}) or {}
+    rows: List[Dict[str, Any]] = []
+    action_index = 0
+    for entry in _get_logs(report):
+        if entry.get("kind") != "action":
+            continue
+        action_index += 1
+        data = entry.get("data", {}) or {}
+        msg = str(entry.get("message", ""))
+        action_id = str(data.get("action_id") or msg)
+        if msg == "penalty":
+            action_name = ACTION_LABELS_CN.get(action_id, action_id)
+            event_type = "扣分"
+        elif msg in ["im_epinephrine_dose_verified", "im_epinephrine_underdose", "im_epinephrine_overdose"]:
+            action_name = ACTION_LABELS_CN.get(msg, msg)
+            event_type = "剂量判定"
+        else:
+            action_name = str(data.get("label") or ACTION_LABELS_CN.get(msg, msg))
+            event_type = "操作"
+        rows.append({
+            "created_at": session.get("created_at", ""),
+            "session_id": session.get("session_id", ""),
+            "participant_id": session.get("participant_id", ""),
+            "institution": session.get("institution", ""),
+            "department": session.get("department", ""),
+            "mode": report.get("mode", ""),
+            "scenario_script_name": report.get("scenario_script_name", ""),
+            "age_years": patient.get("age_years", ""),
+            "weight_kg": patient.get("weight_kg", ""),
+            "action_index": action_index,
+            "time_seconds": entry.get("t", ""),
+            "event_type": event_type,
+            "action_id": action_id,
+            "action_name": action_name,
+            "gained": data.get("gained", ""),
+            "penalty": data.get("penalty", ""),
+            "dose_mg": data.get("dose_mg", ""),
+            "target_dose_mg": data.get("target_dose_mg", ""),
+            "result": data.get("result", ""),
+            "reason": data.get("reason", ""),
+            "raw_message": msg,
+            "raw_data_json": data,
+            "end_reason": report.get("end_reason", ""),
+            "final_score": report.get("score", ""),
+            "storage_source": storage_source,
+        })
+    return rows
+
+
+def build_summary_records_from_reports(reports: List[Dict[str, Any]], storage_source: str = "supabase") -> List[Dict[str, Any]]:
+    return [report_to_summary_record(r, storage_source=storage_source) for r in reports if isinstance(r, dict)]
+
+
+def build_action_detail_records_from_reports(reports: List[Dict[str, Any]], storage_source: str = "supabase") -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for report in reports:
+        if isinstance(report, dict):
+            rows.extend(report_to_action_detail_records(report, storage_source=storage_source))
+    return rows
 
 
 def action_label_map(sim: Simulator) -> Dict[str, str]:
@@ -539,7 +827,7 @@ def finalize_if_done() -> None:
 
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.1 控制台")
+    st.sidebar.title("V1.1.1 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1083,7 +1371,7 @@ def render_intro() -> None:
     with left:
         st.markdown(
             """
-            **V1.1 云端数据库版目标**
+            **V1.1.1 云端数据库与导出增强版目标**
 
             - 把原有 Python 动态分支引擎封装成网页端操作界面；
             - 时间/分级/得分/复评移至左侧病例下方，避免占用顶部横向空间；
@@ -1095,14 +1383,15 @@ def render_intro() -> None:
             - 增加参与者编号、单位/医院、科室/病区字段；
             - 每次结束自动保存训练结果，管理员后台可导出 CSV；
             - 右侧选项下方实时显示“已执行操作”，方便受试者确认自己的操作路径；
-            - 训练结束后优先写入 Supabase 云端数据库 training_records 表，管理员后台优先读取云端记录。
+            - 训练结束后优先写入 Supabase 云端数据库 training_records 表，管理员后台优先读取云端记录；
+            - 管理员后台支持三类导出：训练汇总CSV、操作明细CSV、完整JSONL。
             """
         )
     with right:
         st.container(border=True).markdown(
             """
             **当前版本定位**  
-            V1.1 为云端数据库试运行版：可通过网页访问、完成训练、自动保存到 Supabase，并在管理员后台导出 CSV。  
+            V1.1.1 为云端数据库与导出增强版：可通过网页访问、完成训练、自动保存到 Supabase，并在管理员后台导出汇总CSV、操作明细CSV和完整JSONL。  
             正式多中心长期运行前，建议进一步完善独立账号权限、数据字典和伦理/知情同意材料。
             """
         )
@@ -1159,7 +1448,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台")
+    st.markdown("### 管理员后台｜V1.1.1 数据导出增强版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -1172,59 +1461,123 @@ def render_admin_page() -> None:
                 st.error("管理员密码不正确。")
         return
 
-    db_records, db_message = load_result_records_database()
-    local_records = load_result_records_local()
-    records = list(reversed(db_records)) if db_records else local_records
+    raw_db_rows, db_message = load_result_rows_database()
+    local_full_reports = load_full_reports_local()
+    local_summary_records = load_result_records_local()
+
     if database_configured():
-        if db_records:
-            st.success("V1.1 云端数据库已连接：" + db_message)
+        if raw_db_rows:
+            st.success("云端数据库已连接：" + db_message)
         else:
-            st.warning("V1.1 已配置云端数据库，但当前未读取到记录或读取失败：" + db_message)
+            st.warning("已配置云端数据库，但当前未读取到记录或读取失败：" + db_message)
     else:
         st.info("当前未配置 Supabase 云端数据库，系统将仅显示本地备用记录。")
-    if local_records and db_records:
-        st.caption(f"本地备用记录：{len(local_records)} 条；当前后台优先显示云端数据库记录。")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("训练记录数", len(records))
-    if records:
+
+    if raw_db_rows:
+        full_reports = [full_report_from_database_row(x) for x in raw_db_rows]
+        summary_records = [normalize_database_record(x) for x in raw_db_rows]
+        action_detail_records = build_action_detail_records_from_reports(full_reports, storage_source="supabase")
+        raw_jsonl_records = full_reports
+        storage_label = "supabase"
+    elif local_full_reports:
+        full_reports = local_full_reports
+        summary_records = build_summary_records_from_reports(local_full_reports, storage_source="local")
+        action_detail_records = build_action_detail_records_from_reports(local_full_reports, storage_source="local")
+        raw_jsonl_records = local_full_reports
+        storage_label = "local_full_report"
+    else:
+        full_reports = []
+        summary_records = local_summary_records
+        action_detail_records = []
+        raw_jsonl_records = local_summary_records
+        storage_label = "local_summary_only"
+
+    if local_summary_records and raw_db_rows:
+        st.caption(f"本地备用摘要记录：{len(local_summary_records)} 条；当前后台优先显示云端数据库记录。")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("训练记录数", len(summary_records))
+    if summary_records:
         scores = []
         success_count = 0
-        for r in records:
+        epi_invalid_count = 0
+        for r in summary_records:
             try:
                 scores.append(float(r.get("score", 0)))
             except Exception:
                 pass
-            if r.get("end_reason") == "success":
+            if str(r.get("end_reason", "")) == "success" or str(r.get("success", "")) == "是":
                 success_count += 1
+            if str(r.get("epi_dose_status", "")) in ["underdose", "overdose"]:
+                epi_invalid_count += 1
         c2.metric("平均得分", f"{sum(scores)/len(scores):.1f}" if scores else "-")
         c3.metric("Success次数", success_count)
+        c4.metric("肾上腺素剂量错误", epi_invalid_count)
     else:
         c2.metric("平均得分", "-")
         c3.metric("Success次数", "-")
+        c4.metric("肾上腺素剂量错误", "-")
 
-    st.download_button(
-        "导出全部训练记录 CSV",
-        data=records_to_csv_bytes(records),
-        file_name=f"peds_sim_training_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+    st.markdown("#### 数据导出")
+    st.caption("汇总CSV适合Excel/SPSS/R做统计；操作明细CSV适合分析每一步操作路径；完整JSONL用于保留原始过程数据。")
+
+    d1, d2, d3 = st.columns(3)
+    now = datetime.now().strftime("%Y%m%d_%H%M%S")
+    d1.download_button(
+        "导出汇总 CSV（每次训练一行）",
+        data=records_to_csv_bytes(summary_records),
+        file_name=f"peds_sim_summary_{storage_label}_{now}.csv",
         mime="text/csv",
         use_container_width=True,
-        disabled=not records,
+        disabled=not summary_records,
     )
-    st.download_button(
-        "导出原始 JSONL 记录",
-        data="\n".join(json.dumps(r, ensure_ascii=False) for r in records).encode("utf-8"),
-        file_name=f"peds_sim_training_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl",
+    d2.download_button(
+        "导出操作明细 CSV（每个操作一行）",
+        data=records_to_csv_bytes(action_detail_records),
+        file_name=f"peds_sim_action_details_{storage_label}_{now}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        disabled=not action_detail_records,
+    )
+    d3.download_button(
+        "导出完整 JSONL（每次训练一行）",
+        data=records_to_jsonl_bytes(raw_jsonl_records),
+        file_name=f"peds_sim_full_reports_{storage_label}_{now}.jsonl",
         mime="application/json",
         use_container_width=True,
-        disabled=not records,
+        disabled=not raw_jsonl_records,
     )
 
-    if records:
-        st.markdown("**最近训练记录**")
-        st.dataframe(list(reversed(records[-200:])), use_container_width=True, hide_index=True)
-    else:
-        st.warning("尚未产生训练记录。完成一次训练后，这里会自动显示。")
+    st.divider()
+    view = st.radio(
+        "查看数据表",
+        ["训练汇总", "操作明细"],
+        index=0 if st.session_state.get("admin_export_view", "训练汇总") == "训练汇总" else 1,
+        horizontal=True,
+    )
+    st.session_state.admin_export_view = view
 
+    if view == "训练汇总":
+        if summary_records:
+            st.markdown("**训练汇总预览（最近200条）**")
+            st.dataframe(list(reversed(summary_records[-200:])), use_container_width=True, hide_index=True)
+        else:
+            st.warning("尚未产生训练汇总记录。")
+    else:
+        if action_detail_records:
+            st.markdown("**操作明细预览（最近500条操作事件）**")
+            st.dataframe(list(reversed(action_detail_records[-500:])), use_container_width=True, hide_index=True)
+        else:
+            st.warning("尚未产生可展开的操作明细。旧版本仅保存摘要时，可能无法展开。")
+
+    with st.expander("字段说明", expanded=False):
+        st.markdown(
+            """
+            - **汇总 CSV**：每次训练一行，已将关键步骤时间点、肾上腺素剂量状态、错误操作次数、最终生命体征等展开为单独字段。
+            - **操作明细 CSV**：每个操作事件一行，包含操作时间、操作名称、加分、扣分、剂量、结果等，适合分析操作顺序和延迟。
+            - **完整 JSONL**：一行是一份完整训练报告，保留嵌套结构，适合长期归档和后续深度分析。
+            """
+        )
 
 
 def render_epinephrine_dose_panel(sim: Simulator) -> bool:
