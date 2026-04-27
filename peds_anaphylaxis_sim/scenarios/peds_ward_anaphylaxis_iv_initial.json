@@ -4,8 +4,8 @@
     "id": "peds_ward_anaphylaxis_iv_initial",
     "title": "儿科药物诱发过敏反应动态分支虚拟仿真｜初始版",
     "language": "zh-CN",
-    "version": "V1.2.6e",
-    "source_note": "基于V1.2.6d，修正正常恢复分支生命体征过度矫正问题：糖皮质激素不再即时改善生命体征，并限制标准恢复状态下HR/RR/BP/SpO₂的生理显示范围；25分标准主路径不变。",
+    "version": "V1.2.6g",
+    "source_note": "基于V1.2.6f，新增标准流程延迟计分和普通考核终止条件：标准顺序满分，延迟完成给一半分向下取整，未完成不扣主分；完成两次复评、家属沟通和SBAR交接后普通考核结束。",
     "mode_defaults": {
       "coach": true,
       "tick_seconds": 30
@@ -13,7 +13,7 @@
     "script_role": "initial",
     "script_name": "initial",
     "display_name": "初始版",
-    "scoring_basis": "V1.2.6e: 25-point standard path unchanged; steroid remains scored as dose/timing adjunct but has no immediate vital-sign normalization effect; standard recovery vitals are bounded to avoid over-correction."
+    "scoring_basis": "V1.2.6g: 25-point standard path; delayed standard actions receive half points rounded down; missing actions score 0 without subtraction; ordinary assessment ends after valid first reassessment + valid second reassessment + family communication + SBAR handoff."
   },
   "patient": {
     "age_years": 3,
@@ -952,10 +952,13 @@
   },
   "version_notes": {
     "V1.2.6": "糖皮质激素计分版：总分25分；删除抗组胺药；新增糖皮质激素剂量输入；未及时肌注肾上腺素改为第8关键节点后加速恶化；新增气道梗阻/球囊加压给氧条件性分支。",
-    "V1.2.6b": "去除考试模式CPR/高级支持提示性文字；CPR+球囊面罩加压给氧+联系高级生命支持后，作为危重抢救后转入PICU终点。"
+    "V1.2.6b": "去除考试模式CPR/高级支持提示性文字；CPR+球囊面罩加压给氧+联系高级生命支持后，作为危重抢救后转入PICU终点。",
+    "V1.2.6g": "普通考核结束后未完成项目按0分处理，不能继续补做；错误操作与危重事件仍作为安全指标或结局指标记录。"
   },
   "version_history": {
     "V1.2.6c": "去除“CPR操作提示/CPR状态提示/胸外按压操作提示”等提示性文本；当前症状栏改为随低氧、低血压、气道梗阻和意识状态动态进展。",
-    "V1.2.6d": "心肺骤停后下一步若未选择CPR，或继续让时间流逝而未CPR，系统记录死亡事件并终止情景。"
+    "V1.2.6d": "心肺骤停后下一步若未选择CPR，或继续让时间流逝而未CPR，系统记录死亡事件并终止情景。",
+    "V1.2.6f": "高级生命支持指征分为当前仍适用与历史曾触发；最终安全缺陷只依据当前仍适用状态，同时记录触发时间与原因。",
+    "V1.2.6g": "标准流程按顺序满分；延迟完成给一半分向下取整；未完成不扣主分；普通考核以两次复评、家属沟通和SBAR交接为终止条件。"
   }
 }

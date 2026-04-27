@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.6d arrest-no-CPR death-event candidate
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.6g delayed scoring and standard assessment stop candidate
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -49,7 +49,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.6d arrest-no-CPR death-event candidate"
+APP_VERSION = "V1.2.6g delayed scoring and standard assessment stop candidate"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -573,7 +573,7 @@ def make_database_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "penalties": report.get("penalties"),
         "final_grade": str(report.get("final_grade", "") or ""),
         "end_reason": str(report.get("end_reason", "") or ""),
-        "success": str(report.get("end_reason", "")) == "success",
+        "success": str(report.get("end_reason", "")) in ("success", "standard_assessment_completed"),
         "epi_target_dose_mg": timeline.get("epi_target_dose_mg"),
         "epi_input_dose_mg": timeline.get("epi_last_dose_mg"),
         "epi_dose_status": infer_epi_dose_status(report),
@@ -902,7 +902,7 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
         "age_years": patient.get("age_years", ""),
         "weight_kg": patient.get("weight_kg", ""),
         "end_reason": report.get("end_reason", ""),
-        "success": _yes_no(report.get("end_reason", "") == "success"),
+        "success": _yes_no(report.get("end_reason", "") in ("success", "standard_assessment_completed")),
         "end_time_seconds": end_time,
         "final_grade": report.get("final_grade", ""),
         "score": report.get("score", ""),
@@ -1312,7 +1312,7 @@ def render_participant_entry_page() -> None:
                 st.rerun()
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.2.6d 控制台")
+    st.sidebar.title("V1.2.6g 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1804,7 +1804,7 @@ def make_ui_snapshot(sim: Simulator) -> Dict[str, Any]:
     return {
         "time": sim.state.t,
         "clinical": symptoms_text(sim),
-        "score": f"{max(0, sim.score - sim.penalties)}/{sim.max_score}",
+        "score": f"{sim.score}/{sim.max_score}",
         "reassess": int(sim.state.flags.get("reassess_count", 0)),
         "symptoms": symptoms_text(sim),
         "vitals": visible_vitals(sim),
@@ -1870,7 +1870,7 @@ def compact_action_label(label: str, max_chars: int = 24) -> str:
 
 
 def render_top_status(sim: Simulator, changes: Dict[str, Any]) -> None:
-    score_text = f"{max(0, sim.score - sim.penalties)}/{sim.max_score}"
+    score_text = f"{sim.score}/{sim.max_score}"
     action_count = sum(1 for e in sim.log if e.kind == "action" and e.message != "penalty")
     items = [
         ("时间", f"{sim.state.t}s", False),
@@ -1976,7 +1976,7 @@ def render_intro() -> None:
     with right:
         st.container(border=True).markdown(
             """
-            **V1.2.6d 心肺骤停未CPR死亡事件记录修正版**
+            **V1.2.6g 延迟计分与普通考核终止修正版**
 
             本版在流程锁定基础上，采用25分标准路径：加入糖皮质激素剂量输入与计分，删除抗组胺药按钮，并将气道梗阻、球囊面罩加压给氧、高级支持、CPR作为条件性危重分支单独记录。系统按院区、科室和姓名首字母自动生成匿名参与者编号，并在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
 
@@ -2045,7 +2045,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.2.6d 研究质控与导出增强版")
+    st.markdown("### 管理员后台｜V1.2.6g 研究质控与导出增强版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -2103,7 +2103,7 @@ def render_admin_page() -> None:
                 scores.append(float(r.get("score", 0)))
             except Exception:
                 pass
-            if str(r.get("end_reason", "")) == "success" or str(r.get("success", "")) == "是":
+            if str(r.get("end_reason", "")) in ("success", "standard_assessment_completed") or str(r.get("success", "")) == "是":
                 success_count += 1
             if str(r.get("epi_dose_status", "")) in ["underdose", "overdose"]:
                 epi_invalid_count += 1
@@ -2461,6 +2461,7 @@ def render_report() -> None:
 
     end_reason_labels = {
         "success": "标准路径完成，病情稳定",
+        "standard_assessment_completed": "普通考核完成：两次复评 + 家属沟通 + SBAR交接",
         "failure": "失败结局",
         "timeout": "超时未完成",
         "manual_end": "手动结束",

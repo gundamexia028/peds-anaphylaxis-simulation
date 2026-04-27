@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (V1.2.6e vital recovery bounds fix)
+Pediatric Ward Anaphylaxis Simulator (V1.2.6g delayed scoring and standard assessment stop)
 
-特点（V1.2.6e）：
+特点（V1.2.6g）：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
 - 操作菜单：仅显示“操作名称”，不提供引导性措辞
-- 自动评分：时间窗 + 过程扣分（仅用于培训）
+- 自动评分：标准顺序满分；延迟完成给一半分向下取整；未完成不扣主分
 - 报告突出“过程性安全缺陷”（如未呼救/未给氧/未监护/未测血压/复评不足）
-- 防止过早结束：成功判定需达到最短训练时长（在情景脚本 training.min_time_seconds_for_success 配置）
+- 普通考核结束：有效第一次复评 + 有效第二次复评 + 告知家属 + SBAR交接
 
 声明：
 - 仅用于教学与科研可行性验证，不可用于临床决策。
@@ -97,6 +97,28 @@ class Simulator:
             self.actions = list(self.actions)
             rnd.shuffle(self.actions)
         self.action_order_labels = [a.get("id", "") for a in self.actions]
+
+        # V1.2.6g: standard-flow scoring order. A standard action completed
+        # after any later standard action is considered delayed and receives
+        # half of its available points, rounded down. Missing standard actions
+        # receive 0 and do not subtract from the main score.
+        self.standard_flow_order = {
+            "stop_infusion": 1,
+            "call_help": 2,
+            "abc_assess": 3,
+            "high_flow_oxygen": 4,
+            "shock_position": 5,
+            "connect_monitor": 6,
+            "check_bp": 7,
+            "im_epinephrine": 8,
+            "fluid_bolus": 9,
+            "reassess_first": 10,
+            "bronchodilator": 11,
+            "steroid": 12,
+            "reassess_second": 13,
+            "family_explain": 14,
+            "sbar_handoff": 15,
+        }
 
         base = scenario["baseline"]
 
@@ -479,29 +501,66 @@ class Simulator:
             self.action_first_time[action_id] = self.state.t
         return first_time
 
-    def _award_points_once(self, score_key: str, points: int) -> int:
-        """Award custom points once without relying on first click timing."""
+    def _standard_score_action_id(self, action_id: str) -> str:
+        aliases = {
+            "im_epinephrine_dose_verified": "im_epinephrine",
+            "fluid_bolus_volume_verified": "fluid_bolus",
+            "steroid_dose_verified": "steroid",
+        }
+        return aliases.get(action_id, action_id)
+
+    def _is_delayed_standard_action(self, action_id: str) -> bool:
+        """A standard action is delayed if a later standard-flow action has
+        already been attempted before this action is scored. Early completion
+        is not penalized; late completion earns half points rounded down.
+        """
+        canonical = self._standard_score_action_id(action_id)
+        order = getattr(self, "standard_flow_order", {})
+        if canonical not in order:
+            return False
+        idx = int(order[canonical])
+        for aid in self.action_first_time:
+            other = self._standard_score_action_id(aid)
+            if other != canonical and other in order and int(order[other]) > idx:
+                return True
+        return False
+
+    def _apply_delay_rule(self, action_id: str, points: int) -> Tuple[int, bool]:
+        points = int(points)
+        delayed = self._is_delayed_standard_action(action_id)
+        if points <= 0:
+            return 0, delayed
+        return (max(0, points // 2), True) if delayed else (points, False)
+
+    def _award_points_once(self, score_key: str, points: int, action_id: Optional[str] = None) -> int:
+        """Award points once; V1.2.6g applies standard-flow delayed scoring."""
         if points <= 0:
             return 0
         flag = f"_score_awarded_{score_key}"
         if self.state.flags.get(flag, False):
             return 0
-        self.score += int(points)
+        gained, delayed = self._apply_delay_rule(action_id or score_key, int(points))
+        self.score += int(gained)
         if self.score > self.max_score:
             self.score = self.max_score
         self.state.flags[flag] = True
-        return int(points)
+        if delayed:
+            self.state.flags.setdefault("delayed_actions", [])
+            self.state.flags["delayed_actions"].append(action_id or score_key)
+        return int(gained)
 
     def _award_action_score(self, action_id: str, action: Dict[str, Any], first_time: bool) -> int:
         sc = action.get("score", {})
         points = int(sc.get("points", 0))
         if not first_time or points <= 0:
             return 0
-        window = int(sc.get("time_window_seconds", 999999))
-        gained = points if self.state.t <= window else max(0, points // 2)
+        gained, delayed = self._apply_delay_rule(action_id, points)
         self.score += gained
         if self.score > self.max_score:
             self.score = self.max_score
+        if delayed:
+            self.state.flags.setdefault("delayed_actions", [])
+            self.state.flags["delayed_actions"].append(action_id)
         return gained
 
     def _apply_action_effects_only(self, action_id: str) -> None:
@@ -565,6 +624,11 @@ class Simulator:
             f["cpr_indicated"] = True
             f["bvm_required"] = True
             f["advanced_support_indicated"] = True
+            f["advanced_support_indicated_current"] = True
+            f["advanced_support_indicated_ever"] = True
+            f["advanced_support_indicated_reason"] = f.get("advanced_support_indicated_reason") or "cardiac_arrest"
+            f["advanced_support_indicated_time_sec"] = f.get("advanced_support_indicated_time_sec") or self.state.t
+            f["advanced_support_current_reason"] = "cardiac_arrest"
             f["resuscitation_required"] = True
             f["cardiac_arrest_time_sec"] = self.state.t
             self._log("system", "cardiac_arrest_triggered", {
@@ -678,21 +742,22 @@ class Simulator:
             if delay_node:
                 f["epinephrine_delay_after_core_steps"] = True
         self._enter_cardiac_arrest_if_needed()
-        # airway/BVM/ALS derived flags
+        # airway/BVM derived flags remain event-based because once the patient
+        # has reached these critical branches they should be retained for
+        # branch analysis. ALS indication, however, is refreshed as a CURRENT
+        # need to avoid a stable standard-path case being flagged at the end
+        # merely because a transient early vital-sign threshold was crossed.
         if self._airway_obstruction_indicated():
             f["airway_obstruction_triggered"] = True
-            f["advanced_support_indicated"] = True
         if self._bvm_indicated():
             f["bvm_required"] = True
-            f["advanced_support_indicated"] = True
-        if self._advanced_support_indicated():
-            f["advanced_support_indicated"] = True
         if f.get("cardiac_arrest", False):
             f["cpr_required"] = True
             f["cpr_indicated"] = True
             f["bvm_required"] = True
-            f["advanced_support_indicated"] = True
+        self._refresh_advanced_support_flags()
         self._update_resuscitation_status()
+        self._refresh_advanced_support_flags()
 
     def _airway_obstruction_indicated(self) -> bool:
         v = self.state.vitals
@@ -731,19 +796,55 @@ class Simulator:
             return True
         return False
 
-    def _advanced_support_indicated(self) -> bool:
+    def _advanced_support_status(self) -> Tuple[bool, str]:
+        """Return whether advanced life support is CURRENTLY indicated and why.
+
+        V1.2.6f separates current indication from historical/transient triggers.
+        A short early SpO2/BP dip that later resolves should be retained only as
+        an analysis trace, not as a final process-safety defect.
+        """
         v = self.state.vitals
         s = self.state.symptoms
         f = self.state.flags
-        if f.get("cardiac_arrest", False) or f.get("bvm_required", False) or f.get("airway_obstruction_triggered", False):
-            return True
-        if v.get("SpO2", 100) < 90 or v.get("SBP", 999) < self.age_sbp_threshold():
-            return True
-        if s.get("stridor", 0) >= 2 or s.get("consciousness", 0) >= 2:
-            return True
+        if f.get("critical_resuscitated_transfer_picu", False) or f.get("resuscitation_rosc", False):
+            return True, "post_arrest_transfer_picu"
+        if f.get("cardiac_arrest", False):
+            return True, "cardiac_arrest"
+        if f.get("bvm_required", False):
+            return True, "bvm_required_or_ventilation_failure"
+        if f.get("airway_obstruction_triggered", False):
+            return True, "airway_obstruction"
+        if v.get("SpO2", 100) < 90:
+            return True, "current_severe_hypoxemia"
+        if v.get("SBP", 999) < self.age_sbp_threshold():
+            return True, "current_hypotension_below_age_threshold"
+        if s.get("stridor", 0) >= 2:
+            return True, "current_significant_stridor"
+        if s.get("consciousness", 0) >= 2:
+            return True, "current_altered_consciousness"
         if f.get("repeat_epi_given", False) and self._is_unresolved_after_initial_support():
-            return True
-        return False
+            return True, "unresolved_after_repeat_epinephrine"
+        return False, ""
+
+    def _advanced_support_indicated(self) -> bool:
+        return self._advanced_support_status()[0]
+
+    def _refresh_advanced_support_flags(self) -> None:
+        f = self.state.flags
+        indicated, reason = self._advanced_support_status()
+        f["advanced_support_indicated_current"] = bool(indicated)
+        # Backward-compatible alias now means CURRENT indication, not ever.
+        f["advanced_support_indicated"] = bool(indicated)
+        f["advanced_support_current_reason"] = reason
+        if indicated:
+            f["advanced_support_indicated_ever"] = True
+            f["advanced_support_latest_reason"] = reason
+            f["advanced_support_latest_time_sec"] = self.state.t
+            if not f.get("advanced_support_indicated_time_sec"):
+                f["advanced_support_indicated_time_sec"] = self.state.t
+                f["advanced_support_indicated_reason"] = reason
+        else:
+            f["advanced_support_current_reason"] = ""
 
     def apply_action(self, action_id: str) -> None:
         action = self._find_action(action_id)
@@ -778,7 +879,7 @@ class Simulator:
                 self.state.flags["reassess_count"] = max(int(self.state.flags.get("reassess_count", 0)), 1)
                 unresolved = self._is_unresolved_after_initial_support()
                 self.state.flags["repeat_epi_indicated"] = bool(unresolved)
-                gained = self._award_points_once("reassess_first", int(action.get("score", {}).get("points", 0)))
+                gained = self._award_points_once("reassess_first", int(action.get("score", {}).get("points", 0)), "reassess_first")
                 self._log("action", action_id, {
                     "label": action.get("label", ""),
                     "gained": gained,
@@ -817,7 +918,7 @@ class Simulator:
             else:
                 self.state.flags["second_reassessment_done"] = True
                 self.state.flags["reassess_count"] = max(int(self.state.flags.get("reassess_count", 0)), 2)
-                gained = self._award_points_once("reassess_second", int(action.get("score", {}).get("points", 0)))
+                gained = self._award_points_once("reassess_second", int(action.get("score", {}).get("points", 0)), "reassess_second")
                 self._log("action", action_id, {
                     "label": action.get("label", ""),
                     "gained": gained,
@@ -846,7 +947,7 @@ class Simulator:
             valid = self.state.flags.get("family_communication", False) and self.state.flags.get("second_reassessment_done", False)
             if valid:
                 self.state.flags["family_sbar_completed"] = True
-                gained = self._award_points_once("family_sbar", int(action.get("score", {}).get("points", 0)))
+                gained = self._award_points_once("family_sbar", int(action.get("score", {}).get("points", 0)), "sbar_handoff")
                 status = "valid"
                 result = "告知家属后完成SBAR交接，计入沟通交接得分。"
             else:
@@ -859,15 +960,17 @@ class Simulator:
 
         if action_id == "advanced_support":
             self._first_attempt(action_id)
-            indicated = self._advanced_support_indicated()
+            indicated, reason = self._advanced_support_status()
             self.state.flags["advanced_support_contacted"] = True
-            self.state.flags["advanced_support_indicated"] = bool(indicated)
+            self.state.flags["advanced_support_contact_time_sec"] = self.state.t
+            self.state.flags["advanced_support_contact_reason"] = reason if indicated else "not_currently_indicated"
             self._refresh_process_flags()
             self.state.grade = self.compute_grade()
             self._log("action", action_id, {
                 "label": action.get("label", ""),
                 "gained": 0,
                 "status": "indicated" if indicated else "recorded_not_required",
+                "reason": reason,
                 "result": "高级生命支持联系已记录。" if indicated else "已记录联系高级生命支持；当前未达到规范升级条件。"
             })
             return
@@ -897,7 +1000,8 @@ class Simulator:
             self.state.flags["bvm_required"] = bool(indicated)
             if indicated:
                 self.apply_effects(action.get("effects", {}))
-                self.state.flags["advanced_support_indicated"] = True
+                self.state.flags["advanced_support_indicated_ever"] = True
+                self.state.flags["advanced_support_latest_reason"] = "bvm_ventilation_done_for_critical_branch"
                 status = "indicated"
                 result = "球囊面罩加压给氧已记录。"
             else:
@@ -1076,7 +1180,7 @@ class Simulator:
         else:
             log_msg = "im_epinephrine_dose_verified" if not dose_high else "im_epinephrine_dose_high"
             self.state.flags["epi_valid_dose_mg"] = round(dose, 3)
-            gained = 0 if dose_high else self._award_points_once("im_epinephrine", int(action.get("score", {}).get("points", 0)))
+            gained = 0 if dose_high else self._award_points_once("im_epinephrine", int(action.get("score", {}).get("points", 0)), "im_epinephrine")
 
         self._log("action", log_msg, {
             "dose_mg": round(dose, 3),
@@ -1178,7 +1282,7 @@ class Simulator:
         if not self.state.flags.get("epi_im_given", False):
             self.state.flags["fluid_without_epi"] = True
         self._apply_action_effects_only(action_id)
-        gained = self._award_points_once("fluid_bolus", int(action.get("score", {}).get("points", 0)))
+        gained = self._award_points_once("fluid_bolus", int(action.get("score", {}).get("points", 0)), "fluid_bolus")
         self._log("action", "fluid_bolus_volume_verified", {
             "volume_ml": round(volume, 1),
             "min_ml": min_ml,
@@ -1239,13 +1343,24 @@ class Simulator:
         if dose > max_mg:
             f["steroid_over"] = True
 
-        gained = 0
+        base_gained = 0
         if timing_valid:
-            gained += self._award_points_once("steroid_timing", 2)
+            base_gained += 2
         if after_epi:
-            gained += self._award_points_once("steroid_after_epi", 1)
+            base_gained += 1
         if dose_valid:
-            gained += self._award_points_once("steroid_dose", 2)
+            base_gained += 2
+        gained, delayed_steroid = self._apply_delay_rule("steroid", base_gained)
+        if not f.get("_score_awarded_steroid", False):
+            self.score += int(gained)
+            if self.score > self.max_score:
+                self.score = self.max_score
+            f["_score_awarded_steroid"] = True
+            if delayed_steroid and gained > 0:
+                f.setdefault("delayed_actions", [])
+                f["delayed_actions"].append("steroid")
+        else:
+            gained = 0
 
         f["steroid_valid"] = bool(timing_valid and after_epi and dose_valid)
         if f["steroid_valid"]:
@@ -1309,6 +1424,25 @@ class Simulator:
         except Exception:
             pass
 
+        # V1.2.6g ordinary assessment stop: once the learner has completed
+        # effective first reassessment, effective second reassessment, family
+        # communication, and SBAR handoff, the ordinary exam ends. Any standard
+        # actions not completed by this point remain 0 and cannot be made up.
+        ordinary_completed = bool(
+            self.state.flags.get("first_reassessment_done", False)
+            and self.state.flags.get("second_reassessment_done", False)
+            and self.state.flags.get("family_communication", False)
+            and self.state.flags.get("sbar_handoff", False)
+            and not self.state.flags.get("cardiac_arrest", False)
+            and not self.state.flags.get("dead", False)
+        )
+        if ordinary_completed:
+            self.state.flags["standard_assessment_completed"] = True
+            self.state.flags["ordinary_exam_terminal"] = True
+            if self.score >= self.max_score and self.state.grade <= 2:
+                self.state.flags["standard_pathway_full_score"] = True
+            return True, "standard_assessment_completed"
+
         try:
             if safe_eval(succ, ctx) and (self.state.t >= self.min_time_for_success):
                 return True, "success"
@@ -1337,7 +1471,7 @@ class Simulator:
             issues.append("未完成体位管理")
         if not f.get("monitor_on", False):
             issues.append("未连接监护")
-        if not f.get("bp_checked", False):
+        if not (f.get("bp_checked", False) or "check_bp" in self.action_first_time):
             issues.append("未测量血压/评估循环状态")
         if not f.get("epi_im_given", False):
             issues.append("未完成有效肌注肾上腺素")
@@ -1387,8 +1521,16 @@ class Simulator:
             issues.append("病情已较前稳定时进行了非必要再次肌注")
         if f.get("nebulized_epi_not_indicated", False):
             issues.append("雾化肾上腺素使用条件不充分或替代一线治疗倾向")
-        if f.get("advanced_support_indicated", False) and not f.get("advanced_support_contacted", False):
-            issues.append("达到高级支持条件但未联系高级支持")
+        als_current = bool(f.get("advanced_support_indicated_current", f.get("advanced_support_indicated", False)))
+        if (
+            als_current
+            and not f.get("advanced_support_contacted", False)
+            and not f.get("airway_obstruction_triggered", False)
+            and not f.get("bvm_required", False)
+            and not f.get("cpr_required", False)
+            and not f.get("cardiac_arrest", False)
+        ):
+            issues.append("当前仍达到高级支持条件但未联系高级支持")
         if (f.get("cpr_required", False) or f.get("cpr_indicated", False)) and not f.get("cpr_done", False):
             issues.append("达到心肺复苏条件但未CPR")
         if f.get("cardiac_arrest", False) and not f.get("resuscitation_rosc", False) and f.get("cpr_done", False) and not f.get("bvm_done", False):
@@ -1454,9 +1596,10 @@ class Simulator:
             "death_after_arrest_without_cpr": bool(f.get("death_after_arrest_without_cpr", False)),
             "death_time_sec": f.get("death_time_sec", None),
             "death_reason": f.get("death_reason", ""),
-            "score": max(0, self.score - self.penalties),
+            "score": self.score,
             "raw_score": self.score,
             "penalties": self.penalties,
+            "penalties_not_subtracted_from_main_score": True,
             "max_score": self.max_score,
             "critical_missing": missing,
             "process_safety_issues": self._process_safety_issues(),
@@ -1465,7 +1608,14 @@ class Simulator:
                 "repeat_epi_indicated": bool(f.get("repeat_epi_indicated", False)),
                 "repeat_epi_given": bool(f.get("repeat_epi_given", False)),
                 "advanced_support_indicated": bool(f.get("advanced_support_indicated", False)),
+                "advanced_support_indicated_current": bool(f.get("advanced_support_indicated_current", f.get("advanced_support_indicated", False))),
+                "advanced_support_indicated_ever": bool(f.get("advanced_support_indicated_ever", False)),
+                "advanced_support_indicated_time_sec": f.get("advanced_support_indicated_time_sec", None),
+                "advanced_support_indicated_reason": f.get("advanced_support_indicated_reason", ""),
+                "advanced_support_current_reason": f.get("advanced_support_current_reason", ""),
                 "advanced_support_contacted": bool(f.get("advanced_support_contacted", False)),
+                "advanced_support_contact_time_sec": f.get("advanced_support_contact_time_sec", None),
+                "advanced_support_contact_reason": f.get("advanced_support_contact_reason", ""),
                 "cardiac_arrest": bool(f.get("cardiac_arrest", False)),
                 "cpr_required": bool(f.get("cpr_required", False)),
                 "cpr_indicated": bool(f.get("cpr_indicated", False)),
@@ -1477,6 +1627,10 @@ class Simulator:
                 "critical_transfer_picu": bool(f.get("critical_transfer_picu", False)),
                 "death_after_arrest_without_cpr": bool(f.get("death_after_arrest_without_cpr", False)),
                 "family_sbar_completed": bool(f.get("family_sbar_completed", False)),
+                "standard_assessment_completed": bool(f.get("standard_assessment_completed", False)),
+                "ordinary_exam_terminal": bool(f.get("ordinary_exam_terminal", False)),
+                "standard_pathway_full_score": bool(f.get("standard_pathway_full_score", False)),
+                "delayed_actions": list(f.get("delayed_actions", []) or []),
                 "steroid_valid": bool(f.get("steroid_valid", False)),
                 "airway_obstruction_triggered": bool(f.get("airway_obstruction_triggered", False)),
                 "bvm_required": bool(f.get("bvm_required", False)),
@@ -1514,6 +1668,9 @@ class Simulator:
                 "nebulized_epinephrine": t_of("nebulized_epinephrine"),
                 "repeat_epinephrine": t_of("repeat_epinephrine"),
                 "advanced_support": t_of("advanced_support"),
+                "advanced_support_indicated_time_sec": f.get("advanced_support_indicated_time_sec", None),
+                "advanced_support_indicated_reason": f.get("advanced_support_indicated_reason", ""),
+                "advanced_support_current_reason": f.get("advanced_support_current_reason", ""),
                 "bvm_ventilation": t_of("bvm_ventilation"),
                 "cpr": t_of("cpr"),
                 "cardiac_arrest_time_sec": f.get("cardiac_arrest_time_sec", None),
@@ -1619,7 +1776,7 @@ def save_report(report: Dict[str, Any], out_dir: str) -> Tuple[str, str]:
     lines.append("")
     lines.append(f"- 结束时间：{report['end_time_seconds']}s")
     lines.append(f"- 最终分级：{report['final_grade']}")
-    lines.append(f"- 得分：{report['score']}/{report['max_score']}（raw {report['raw_score']}，penalties {report['penalties']}）")
+    lines.append(f"- 得分：{report['score']}/{report['max_score']}（raw {report['raw_score']}，penalties记录但不扣主分：{report['penalties']}）")
     lines.append("")
 
     lines.append("## 过程性安全缺陷（培训评估）")
