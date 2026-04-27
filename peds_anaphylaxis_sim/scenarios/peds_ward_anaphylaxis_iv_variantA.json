@@ -4,8 +4,8 @@
     "id": "peds_ward_anaphylaxis_iv_variantA",
     "title": "儿科药物诱发过敏反应动态分支仿真｜变体版（皮肤表现不典型）",
     "language": "zh-CN",
-    "version": "1.2.1-guideline-aligned-2025-consensus",
-    "source_note": "基于2025年《严重过敏反应诊断和临床管理专家共识》初始治疗流程、临床表现和儿童肾上腺素剂量规则修订，供护理教学与科研模拟使用。",
+    "version": "1.2.2-guided-flow-open-actions-2025-consensus",
+    "source_note": "基于2025年《严重过敏反应诊断和临床管理专家共识》修订：临床表现按皮肤黏膜、呼吸/气道、胃肠、循环和意识系统随病情进展动态展示；操作按钮全部可选；标准流程仅在训练模式中作为内部引导与偏离提醒。",
     "mode_defaults": {
       "coach": true,
       "tick_seconds": 30
@@ -13,7 +13,7 @@
     "script_role": "variant",
     "script_name": "variantA",
     "display_name": "变体版（皮肤表现不典型）",
-    "scoring_basis": "2025中国严重过敏反应专家共识对齐版：临床表现按病情进展分级，抢救操作加入步骤规划限制，儿童肌注肾上腺素上限按0.3 mg处理。"
+    "scoring_basis": "2025中国严重过敏反应专家共识对齐版：儿童肌注肾上腺素剂量、病情进展、复评和升级处理纳入评分/记录；操作不再前台锁定，训练模式显示标准流程提醒，考试模式保持无提示。"
   },
   "patient": {
     "age_years": 3,
@@ -246,7 +246,7 @@
       },
       "score": {
         "points": 4,
-        "time_window_seconds": 180
+        "time_window_seconds": 300
       },
       "effects": {
         "set_flags": {
@@ -303,7 +303,8 @@
       },
       "score": {
         "points": 1,
-        "time_window_seconds": 420
+        "time_window_seconds": 420,
+        "score_when": "flags.iv_access and flags.bp_checked"
       },
       "effects": {
         "set_flags": {
@@ -421,7 +422,8 @@
       },
       "score": {
         "points": 1,
-        "time_window_seconds": 600
+        "time_window_seconds": 600,
+        "score_when": "flags.epi_im_given or t >= 180"
       },
       "effects": {
         "counter_inc": {
@@ -495,7 +497,8 @@
       },
       "score": {
         "points": 1,
-        "time_window_seconds": 600
+        "time_window_seconds": 600,
+        "score_when": "flags.help_called and flags.epi_im_given"
       },
       "effects": {
         "set_flags": {
@@ -513,7 +516,8 @@
       },
       "score": {
         "points": 1,
-        "time_window_seconds": 99999
+        "time_window_seconds": 99999,
+        "score_when": "flags.reassess_count >= 2 and grade <= 2"
       },
       "effects": {
         "set_flags": {
@@ -980,11 +984,11 @@
     ]
   },
   "scoring_notes": {
-    "profile": "v1.2.1_guideline_aligned_2025_consensus",
+    "profile": "v1.2.2_guided_flow_open_actions_2025_consensus",
     "total_score": 20,
     "principle": "救命核心操作优先：去除可疑诱因、呼救、ABC、给氧、监护/血压、早期肌注肾上腺素、补液、复评与交接。辅助治疗不能替代肌注肾上腺素。",
     "dose_rule": "本系统面向2–11岁儿童模拟病例，肌注肾上腺素按0.01 mg/kg计算，单次最大0.3 mg；低于目标剂量判定为无效，高于目标剂量判定为剂量不准确，超过0.3 mg判定为严重用药安全事件。",
-    "planning_rule": "部分操作设定前置条件，避免未评估即交接、用二线药替代一线药、未确认循环状态即补液、未复评即重复给药等不合规路径。"
+    "planning_rule": "所有操作按钮均保持可选，避免因前台锁定影响受试者真实操作路径；训练模式下系统依据2025共识内置标准流程，显示当前推荐步骤及偏离提醒；考试模式不显示流程提示，仅记录操作路径与评分结果。"
   },
   "clinical_progression": {
     "1": {
@@ -1003,5 +1007,9 @@
       "stage": "IV级｜心跳或呼吸骤停期",
       "manifestations": "呼吸骤停或心跳骤停，意识丧失，需立即就地心肺复苏并启动高级生命支持。"
     }
+  },
+  "clinical_manifestation_display": {
+    "principle": "当前临床表现不再仅显示固定标签，而是根据症状、生命体征、监护/血压可见性和治疗反应，按皮肤黏膜、呼吸/气道、胃肠、循环、神经/意识五个系统动态生成。",
+    "basis": "2025严重过敏反应共识关于临床表现和病程进展的描述。"
   }
 }

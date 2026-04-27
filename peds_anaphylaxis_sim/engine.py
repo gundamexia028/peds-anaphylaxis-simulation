@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (Training v1.2.1 guideline-aligned)
+Pediatric Ward Anaphylaxis Simulator (Training v1.2.2 guided-flow/open-actions)
 
 特点（培训版）：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
@@ -237,25 +237,128 @@ class Simulator:
             "action_first_time": self.action_first_time,
         }
 
-    def is_action_allowed(self, action_id: str) -> Tuple[bool, str]:
-        """Scenario-driven step-planning restriction.
+    def check_standard_flow(self, action_id: str) -> Tuple[bool, str]:
+        """Return whether an action matches the guideline-based standard flow.
 
-        Actions without an availability rule are always selectable. Actions with
-        availability.when are disabled until the rule becomes true. The rule is
-        also enforced in apply_action to protect script/API execution.
+        V1.2.2 design principle:
+        - All operation buttons remain selectable in both coach and exam modes.
+        - These availability rules are no longer used to lock buttons.
+        - In coach mode only, the UI uses this result to display the internal
+          standard-flow reminder when a learner chooses or hovers over an
+          action outside the recommended sequence.
+        - Exam mode does not display these process hints.
         """
         action = next((a for a in self.actions if a.get("id") == action_id), None)
         if not action:
             return False, "未知操作。"
         availability = action.get("availability", {}) or {}
         when = str(availability.get("when", "") or "").strip()
-        reason = str(availability.get("reason", "当前步骤暂不可用，请先完成前置评估或处置。"))
+        reason = str(availability.get("reason", "当前操作不符合推荐流程，请先完成前置评估或处置。"))
         if not when:
             return True, ""
         try:
             return (True, "") if safe_eval(when, self._eval_ctx()) else (False, reason)
-        except Exception as e:
-            return False, f"当前步骤暂不可用：{reason}"
+        except Exception:
+            return False, reason
+
+    def is_action_allowed(self, action_id: str) -> Tuple[bool, str]:
+        """Backward-compatible API: V1.2.2 no longer blocks actions.
+
+        The UI should call check_standard_flow() for training guidance, but every
+        operation remains selectable as requested.
+        """
+        return True, ""
+
+    def get_current_manifestation_item(self) -> Dict[str, str]:
+        """Build a guideline-oriented, dynamic clinical presentation narrative.
+
+        The 2025 Chinese expert consensus emphasizes that anaphylaxis may involve
+        skin/mucosa, respiratory, gastrointestinal, cardiovascular and central
+        nervous systems, and that fatal/severe cases may be dominated by airway
+        obstruction or circulatory collapse. This narrative changes as the
+        simulated symptoms and vital signs evolve.
+        """
+        s = self.state.symptoms
+        v = self.state.vitals
+        f = self.state.flags
+        g = self.state.grade
+
+        skin = []
+        if s.get("rash", 0) >= 1:
+            skin.append("皮肤瘙痒、潮红、风团样皮疹")
+        if s.get("angioedema", 0) >= 1:
+            skin.append("口唇/眼睑或面部水肿")
+        if s.get("throat_tightness", 0) >= 1:
+            skin.append("喉部发紧、声音改变或吞咽不适")
+
+        resp = []
+        if s.get("cough", 0) >= 1:
+            resp.append("持续咳嗽")
+        if s.get("wheeze", 0) >= 1:
+            resp.append("喘息/支气管痉挛")
+        if s.get("stridor", 0) >= 1:
+            resp.append("喉鸣/上气道受累")
+        if s.get("cyanosis", 0) >= 1:
+            resp.append("口唇发绀")
+        if f.get("monitor_on", False):
+            spo2 = float(v.get("SpO2", 100))
+            if spo2 < 95:
+                resp.append(f"SpO₂下降至{spo2:.0f}%")
+
+        gi = []
+        if s.get("gi", 0) >= 1:
+            gi.append("腹痛、恶心或胃肠道不适")
+        if s.get("vomiting", 0) >= 1:
+            gi.append("呕吐")
+
+        cv = []
+        if s.get("poor_perfusion", 0) >= 1:
+            cv.append("四肢凉、毛细血管再充盈延长或末梢灌注差")
+        if f.get("bp_checked", False):
+            sbp = float(v.get("SBP", 999))
+            if sbp < self.age_sbp_threshold():
+                cv.append(f"收缩压{sbp:.0f} mmHg，低于儿童低血压阈值")
+            else:
+                baseline_sbp = float(self.state.baseline_vitals.get("SBP", sbp))
+                drop_pct = 100 * (baseline_sbp - sbp) / max(1.0, baseline_sbp)
+                if drop_pct >= self.scenario["thresholds"].get("hypotension_sbp_drop_pct", 30):
+                    cv.append(f"收缩压较基线下降约{drop_pct:.0f}%")
+        elif s.get("poor_perfusion", 0) >= 1:
+            cv.append("需立即测血压并复评循环状态")
+
+        neuro = []
+        if s.get("consciousness", 0) >= 1:
+            labels = {1: "烦躁不安", 2: "嗜睡", 3: "反应差/意识障碍"}
+            neuro.append(labels.get(int(s.get("consciousness", 1)), "意识状态改变"))
+        if f.get("dead", False) or f.get("cardiac_arrest", False) or g >= 4:
+            neuro.append("意识丧失或呼吸/心跳骤停风险极高")
+
+        parts = []
+        if skin:
+            parts.append("皮肤黏膜：" + "、".join(dict.fromkeys(skin)))
+        if resp:
+            parts.append("呼吸/气道：" + "、".join(dict.fromkeys(resp)))
+        if gi:
+            parts.append("胃肠道：" + "、".join(dict.fromkeys(gi)))
+        if cv:
+            parts.append("循环：" + "、".join(dict.fromkeys(cv)))
+        if neuro:
+            parts.append("神经/意识：" + "、".join(dict.fromkeys(neuro)))
+
+        if not parts:
+            parts.append("暂无明显主观异常，需结合暴露史和生命体征持续观察。")
+
+        dominant = {
+            1: "以皮肤黏膜/前驱表现为主，需警惕快速进展。",
+            2: "已出现呼吸、胃肠或早期循环受累，符合高度疑似严重过敏反应处置路径。",
+            3: "出现严重呼吸受累或循环衰竭表现，应按危重抢救处理。",
+            4: "已进入呼吸/心跳骤停或濒临骤停阶段，应立即CPR并启动高级生命支持。",
+        }.get(g, "请结合当前病情复评。")
+
+        return {
+            "summary": "；".join(parts),
+            "interpretation": dominant,
+        }
 
     def get_progression_item(self) -> Dict[str, str]:
         data = self.scenario.get("clinical_progression", {}) or {}
@@ -323,19 +426,7 @@ class Simulator:
         g = self.state.grade
         grade_name = {1:"I",2:"II",3:"III",4:"IV"}.get(g, str(g))
 
-        symptom_text = []
-        if s.get("rash",0) >= 1: symptom_text.append("皮疹/风团")
-        if s.get("angioedema",0) >= 1: symptom_text.append("血管性水肿")
-        if s.get("cough",0) >= 1: symptom_text.append("咳嗽")
-        if s.get("throat_tightness",0) >= 1: symptom_text.append("喉部发紧/声音改变")
-        if s.get("wheeze",0) >= 1: symptom_text.append("喘息/支气管痉挛")
-        if s.get("stridor",0) >= 1: symptom_text.append("喉鸣/上气道受累")
-        if s.get("gi",0) >= 1: symptom_text.append("腹痛/胃肠道症状")
-        if s.get("vomiting",0) >= 1: symptom_text.append("呕吐")
-        if s.get("poor_perfusion",0) >= 1: symptom_text.append("末梢灌注差")
-        if s.get("cyanosis",0) >= 1: symptom_text.append("发绀")
-        if s.get("consciousness",0) >= 1: symptom_text.append(["烦躁","嗜睡","反应差"][min(2, int(s.get("consciousness",1))-1)])
-
+        manifestation = self.get_current_manifestation_item()
         progression = self.get_progression_item()
         progression_line = f"病情进展：{progression.get('stage','')}｜{progression.get('manifestations','')}\n"
         prompt = self.get_guided_prompt() if self.mode == "coach" else ""
@@ -344,7 +435,7 @@ class Simulator:
             f"时间：{self.state.t:>4}s | 分级：{grade_name}\n"
             + prompt_line
             + self._format_vitals_line()
-            + f"症状：{('、'.join(symptom_text) if symptom_text else '无明显主观异常')}\n"
+            + f"临床表现：{manifestation.get('summary','')}\n"
         )
 
     def print_coach_hint(self) -> None:
@@ -370,10 +461,11 @@ class Simulator:
         if not action:
             self._log("action", "unknown_action", {"action_id": action_id})
             return
-        allowed, reason = self.is_action_allowed(action_id)
-        if not allowed:
-            self._log("action", "blocked_by_step_plan", {"action_id": action_id, "reason": reason})
-            return
+        flow_ok, flow_reason = self.check_standard_flow(action_id)
+        if (not flow_ok) and self.mode == "coach":
+            self.state.flags["training_flow_deviation_count"] = int(self.state.flags.get("training_flow_deviation_count", 0)) + 1
+            self.state.flags["last_training_flow_warning"] = flow_reason
+            self._log("action", "training_flow_warning", {"action_id": action_id, "reason": flow_reason})
 
         first_time = action_id not in self.action_first_time
         if first_time:
@@ -384,13 +476,25 @@ class Simulator:
         window = int(sc.get("time_window_seconds", 999999))
         gained = 0
 
-        # Award score at most once per action ID (first execution only),
-        # so total score cannot exceed max_score.
+        # Award score at most once per action ID (first execution only).
+        # Optional score_when keeps all buttons selectable while preventing
+        # premature/non-indicated execution from earning points.
+        score_allowed = True
+        score_when = str(sc.get("score_when", "") or "").strip()
+        if score_when:
+            try:
+                score_allowed = safe_eval(score_when, self._eval_ctx())
+            except Exception as e:
+                score_allowed = False
+                self._log("system", "score_when_eval_error", {"action_id": action_id, "expr": score_when, "error": str(e)})
         if first_time and points > 0:
-            gained = points if self.state.t <= window else max(0, points // 2)
-            self.score += gained
-            if self.score > self.max_score:
-                self.score = self.max_score
+            if score_allowed:
+                gained = points if self.state.t <= window else max(0, points // 2)
+                self.score += gained
+                if self.score > self.max_score:
+                    self.score = self.max_score
+            else:
+                self._log("action", "no_score_not_indicated_yet", {"action_id": action_id, "score_when": score_when})
 
         if "penalty_points_always" in sc:
             p = int(sc.get("penalty_points_always", 0))
@@ -424,10 +528,11 @@ class Simulator:
         except Exception:
             dose = 0.0
 
-        allowed, reason = self.is_action_allowed(action_id)
-        if not allowed:
-            self._log("action", "blocked_by_step_plan", {"action_id": action_id, "reason": reason})
-            return {"status": "blocked", "message": f"当前不能执行该给药步骤：{reason}", "dose_mg": dose, "target_dose_mg": None}
+        flow_ok, flow_reason = self.check_standard_flow(action_id)
+        if (not flow_ok) and self.mode == "coach":
+            self.state.flags["training_flow_deviation_count"] = int(self.state.flags.get("training_flow_deviation_count", 0)) + 1
+            self.state.flags["last_training_flow_warning"] = flow_reason
+            self._log("action", "training_flow_warning", {"action_id": action_id, "reason": flow_reason})
 
         weight = float(self.state.weight_kg)
         max_single = 0.3
@@ -577,6 +682,8 @@ class Simulator:
                 "family_communication": t_of("family_explain"),
                 "sbar_handoff": t_of("sbar_handoff"),
                 "reassess_count": int(self.state.flags.get("reassess_count", 0)),
+                "training_flow_deviation_count": int(self.state.flags.get("training_flow_deviation_count", 0)),
+                "last_training_flow_warning": self.state.flags.get("last_training_flow_warning", ""),
             },
             "observe_recommendation": self.scenario.get("reporting", {}).get("observe_recommendation", {}),
             "log": [dict(t=e.t, kind=e.kind, message=e.message, data=e.data) for e in self.log],

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.1 guideline-aligned
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.2 guided-flow/open-actions
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -19,6 +19,7 @@
 - V1.1.4新增：按评估阶段自动锁定流程；基线评估=考试模式+初始病例，模拟培训=训练模式+初始病例，培训后考核=考试模式+变体病例Variant A；受试者不再自行选择运行模式和病例脚本。
 - V1.2.0新增：合并数据质量增强、管理员质控概览与研究分析字段；新增阶段完成状态、重复作答识别、阶段顺序核查、数据有效性标记和能力维度指标导出。
 - V1.2.1新增：对齐2025年严重过敏反应共识，加入病情进展分级展示、步骤规划限制、儿童肾上腺素0.01 mg/kg且最大0.3 mg规则、复评后重复给药与升级处理节点。
+- V1.2.2新增：操作选项全部保持可选；标准流程仅在训练模式中作为内部引导和偏离提醒；当前临床表现按皮肤黏膜、呼吸/气道、胃肠、循环和意识系统随病情动态更新。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -49,7 +50,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.1 guideline-aligned"
+APP_VERSION = "V1.2.2 guided-flow/open-actions"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -284,33 +285,34 @@ def visible_vitals(sim: Simulator) -> Dict[str, str]:
 
 
 def symptoms_text(sim: Simulator) -> str:
-    s = sim.state.symptoms
-    parts = []
-    if s.get("rash", 0) >= 1:
-        parts.append("皮疹/风团")
-    if s.get("angioedema", 0) >= 1:
-        parts.append("血管性水肿")
-    if s.get("cough", 0) >= 1:
-        parts.append("咳嗽")
-    if s.get("throat_tightness", 0) >= 1:
-        parts.append("喉部发紧/声音改变")
-    if s.get("wheeze", 0) >= 1:
-        parts.append("喘息/支气管痉挛")
-    if s.get("stridor", 0) >= 1:
-        parts.append("喉鸣/上气道受累")
-    if s.get("gi", 0) >= 1:
-        parts.append("腹痛/胃肠道症状")
-    if s.get("vomiting", 0) >= 1:
-        parts.append("呕吐")
-    if s.get("poor_perfusion", 0) >= 1:
-        parts.append("末梢灌注差")
-    if s.get("cyanosis", 0) >= 1:
-        parts.append("发绀")
-    if s.get("consciousness", 0) >= 1:
-        labels = ["烦躁", "嗜睡", "反应差"]
-        parts.append(labels[min(2, int(s.get("consciousness", 1)) - 1)])
-    return "、".join(parts) if parts else "无明显主观异常"
+    """Dynamic clinical presentation narrative.
 
+    V1.2.2 no longer shows only several fixed symptom tags. It reads the
+    engine-generated system-based manifestation summary so that the current
+    symptom card changes with disease progression, monitoring availability and
+    treatment response.
+    """
+    try:
+        item = sim.get_current_manifestation_item()
+        summary = str(item.get("summary", ""))
+        interpretation = str(item.get("interpretation", ""))
+        if interpretation:
+            return f"{summary}\n判断提示：{interpretation}"
+        return summary or "请结合当前症状和生命体征复评。"
+    except Exception:
+        s = sim.state.symptoms
+        parts = []
+        if s.get("rash", 0) >= 1:
+            parts.append("皮肤瘙痒/潮红/风团样皮疹")
+        if s.get("cough", 0) >= 1:
+            parts.append("咳嗽")
+        if s.get("wheeze", 0) >= 1:
+            parts.append("喘息")
+        if s.get("stridor", 0) >= 1:
+            parts.append("喉鸣")
+        if s.get("poor_perfusion", 0) >= 1:
+            parts.append("末梢灌注差")
+        return "、".join(parts) if parts else "无明显主观异常"
 
 def progression_text(sim: Simulator) -> str:
     try:
@@ -1783,6 +1785,7 @@ def inject_compact_css() -> None:
             margin-bottom: 0.24rem;
         }
         .clinical-card .value {
+            white-space: pre-line;
             color: #111827;
             font-weight: 820;
             font-size: 1.58rem;
@@ -2208,7 +2211,7 @@ def render_patient_status(sim: Simulator, scenario: Dict[str, Any], changes: Dic
             </div>
             <div class='baseline-box'>{html.escape(baseline)}</div>
             <div class='clinical-card{flash_class(bool(changes.get('symptoms')))}'>
-                <div class='label'>当前症状</div>
+                <div class='label'>当前临床表现（随病情进展更新）</div>
                 <div class='value'>{html.escape(symptom_now)}</div>
             </div>
             <div class='clinical-card{flash_class(bool(changes.get('grade')))}'>
@@ -2557,7 +2560,7 @@ def render_simulation() -> None:
             st.markdown(
                 f"<div class='action-head'>"
                 f"<div class='action-title'>请选择下一步操作</div>"
-                f"<div class='action-note'>每次操作后自动推进 {sim.tick_seconds}s</div>"
+                f"<div class='action-note'>每次操作后自动推进 {sim.tick_seconds}s｜所有操作均可选择</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -2576,6 +2579,11 @@ def render_simulation() -> None:
 
             dose_pending = render_epinephrine_dose_panel(sim)
 
+            if sim.mode == "coach":
+                flow_warning = str(sim.state.flags.get("last_training_flow_warning", "") or "")
+                if flow_warning:
+                    st.info("训练模式标准流程提醒：" + flow_warning + " 该操作已记录，系统不会锁定按钮；请继续按2025共识流程完成后续处置。")
+
             actions = sim.actions
             option_cols = 4
             for idx in range(0, len(actions), option_cols):
@@ -2586,9 +2594,11 @@ def render_simulation() -> None:
                     aid = action.get("id")
                     button_text = f"{idx + local_index + 1}. {short_label}"
                     with col:
-                        allowed, block_reason = sim.is_action_allowed(aid) if hasattr(sim, "is_action_allowed") else (True, "")
-                        disabled = bool(dose_pending or not allowed)
-                        help_text = "" if allowed else (block_reason if sim.mode == "coach" else "当前步骤暂不可用。")
+                        flow_ok, flow_reason = sim.check_standard_flow(aid) if hasattr(sim, "check_standard_flow") else (True, "")
+                        disabled = bool(dose_pending)
+                        help_text = ""
+                        if sim.mode == "coach" and (not flow_ok):
+                            help_text = "训练模式流程提醒：" + str(flow_reason)
                         if st.button(
                             button_text,
                             key=f"action_{aid}_{sim.state.t}_{idx}_{local_index}",
