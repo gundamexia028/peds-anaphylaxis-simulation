@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "scenario": {
-    "id": "peds_ward_anaphylaxis_iv_variantA",
-    "title": "儿科药物诱发过敏反应动态分支仿真｜变体版（皮肤表现不典型）",
+    "id": "peds_ward_anaphylaxis_iv_initial",
+    "title": "儿科药物诱发过敏反应动态分支仿真｜初始版",
     "language": "zh-CN",
     "version": "1.2.2-guided-flow-open-actions-2025-consensus",
     "source_note": "基于2025年《严重过敏反应诊断和临床管理专家共识》修订：临床表现按皮肤黏膜、呼吸/气道、胃肠、循环和意识系统随病情进展动态展示；操作按钮全部可选；标准流程仅在训练模式中作为内部引导与偏离提醒。",
@@ -10,9 +10,9 @@
       "coach": true,
       "tick_seconds": 30
     },
-    "script_role": "variant",
-    "script_name": "variantA",
-    "display_name": "变体版（皮肤表现不典型）",
+    "script_role": "initial",
+    "script_name": "initial",
+    "display_name": "初始版",
     "scoring_basis": "2025中国严重过敏反应专家共识对齐版：儿童肌注肾上腺素剂量、病情进展、复评和升级处理纳入评分/记录；操作不再前台锁定，训练模式显示标准流程提醒，考试模式保持无提示。"
   },
   "patient": {
@@ -40,18 +40,18 @@
   "baseline": {
     "time_zero_description": "儿科普通病区，患儿静脉输注药物后数分钟出现皮肤瘙痒/风团样皮疹、潮红，伴咳嗽、烦躁或诉喉部不适。请根据病情进展、生命体征和可获得信息进行处置。",
     "vitals": {
-      "SpO2": 95.0,
-      "HR": 130.0,
-      "RR": 32.0,
-      "SBP": 97.0,
-      "DBP": 59.0,
+      "SpO2": 98,
+      "HR": 125,
+      "RR": 28,
+      "SBP": 102,
+      "DBP": 62,
       "Temp": 37.8
     },
     "symptoms": {
-      "rash": 0,
+      "rash": 1,
       "angioedema": 0,
-      "wheeze": 1,
-      "stridor": 1,
+      "wheeze": 0,
+      "stridor": 0,
       "gi": 0,
       "consciousness": 0,
       "cough": 1,
