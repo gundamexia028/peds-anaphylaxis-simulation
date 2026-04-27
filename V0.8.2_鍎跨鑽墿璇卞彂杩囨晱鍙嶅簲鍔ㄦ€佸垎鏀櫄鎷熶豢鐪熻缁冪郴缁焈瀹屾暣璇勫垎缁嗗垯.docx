@@ -1,9 +1,0 @@
-# Copy these values into Streamlit Cloud → App settings → Secrets.
-# Do NOT commit real secrets to GitHub.
-
-APP_ACCESS_CODE = "peds2026"
-ADMIN_PASSWORD = "admin2026"
-
-SUPABASE_URL = "https://your-project-ref.supabase.co"
-SUPABASE_SERVICE_ROLE_KEY = "your-service-role-key"
-SUPABASE_TABLE = "training_records"
