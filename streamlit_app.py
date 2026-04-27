@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.3 clean-ui/open-actions
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.4 infusion double-reassessment
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -50,7 +50,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.3 clean-ui/open-actions"
+APP_VERSION = "V1.2.4 infusion-double-reassessment"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -711,13 +711,13 @@ ACTION_LABELS_CN = {
     "connect_monitor": "连接监护",
     "check_bp": "测血压",
     "im_epinephrine": "肌注肾上腺素",
-    "confirm_iv_access": "确认静脉通路",
     "fluid_bolus": "快速补液",
     "bronchodilator": "雾化支扩",
     "nebulized_epinephrine": "雾化肾上腺素",
     "antihistamine_iv": "抗组胺药",
     "steroid": "糖皮质激素",
-    "reassess": "复评记录",
+    "reassess_first": "第一次复评",
+    "reassess_second": "第二次复评",
     "repeat_im_epinephrine": "再次肌注肾上腺素",
     "call_icu_team": "联系高级支持",
     "family_explain": "告知家属",
@@ -739,6 +739,8 @@ KEY_ACTION_COLUMNS = [
     ("bp_check_time", "bp_check"),
     ("epi_time", "epi_im"),
     ("fluid_time", "fluid"),
+    ("first_reassessment_time", "first_reassessment"),
+    ("second_reassessment_time", "second_reassessment"),
     ("family_communication_time", "family_communication"),
     ("sbar_time", "sbar_handoff"),
 ]
@@ -830,7 +832,8 @@ def research_indicators_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
     neb_epi_time = _first_log_time(report, "nebulized_epinephrine")
     bronchodilator_time = _first_log_time(report, "bronchodilator")
     repeat_epi_time = _first_log_time(report, "repeat_im_epinephrine")
-    iv_access_time = _first_log_time(report, "confirm_iv_access")
+    first_reassess_time = timeline.get("first_reassessment", _first_log_time(report, "reassess_first"))
+    second_reassess_time = timeline.get("second_reassessment", _first_log_time(report, "reassess_second"))
     advanced_support_time = _first_log_time(report, "call_icu_team")
     recognition_time = _first_available_time(timeline.get("stop_infusion"), timeline.get("call_help"), abc_time)
     epi_status = infer_epi_dose_status(report)
@@ -850,7 +853,6 @@ def research_indicators_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "bp_assessment_done": _present(timeline.get("bp_check")),
         "epinephrine_given": _present(epi_time),
         "fluid_resuscitation_given": _present(timeline.get("fluid")),
-        "iv_access_confirmed": _present(iv_access_time),
         "abc_assessment_done": _present(abc_time),
         "position_management_done": _present(position_time),
         "family_communication_done": _present(timeline.get("family_communication")),
@@ -875,7 +877,10 @@ def research_indicators_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "bp_assessment_time_sec": _time_or_blank(timeline.get("bp_check")),
         "fluid_resuscitation_given": _yes_no(key_flags["fluid_resuscitation_given"]),
         "fluid_time_sec": _time_or_blank(timeline.get("fluid")),
-        "iv_access_time_sec": _time_or_blank(iv_access_time),
+        "fluid_volume_ml": _time_or_blank(timeline.get("fluid_last_volume_ml")),
+        "fluid_target_min_ml": _time_or_blank(timeline.get("fluid_target_min_ml")),
+        "fluid_target_max_ml": _time_or_blank(timeline.get("fluid_target_max_ml")),
+        "fluid_volume_correct": _yes_no(bool(timeline.get("fluid_volume_valid", False))),
         "epinephrine_under_dose": _yes_no(epi_status == "underdose"),
         "epinephrine_excess_dose": _yes_no(epi_status == "excess"),
         "epinephrine_over_dose": _yes_no(epi_status == "overdose"),
@@ -888,6 +893,8 @@ def research_indicators_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "bronchodilator_time_sec": _time_or_blank(bronchodilator_time),
         "repeat_epinephrine_time_sec": _time_or_blank(repeat_epi_time),
         "advanced_support_time_sec": _time_or_blank(advanced_support_time),
+        "first_reassessment_time_sec": _time_or_blank(first_reassess_time),
+        "second_reassessment_time_sec": _time_or_blank(second_reassess_time),
         "reassessment_done": _yes_no(key_flags["reassessment_done"]),
         "reassessment_count_analysis": reassess_count,
         "family_communication_done": _yes_no(key_flags["family_communication_done"]),
@@ -1332,6 +1339,21 @@ def get_action_history_rows(sim: Simulator) -> List[Dict[str, Any]]:
         elif msg == "im_epinephrine_overdose":
             display = "肌注肾上腺素过量"
             result = f"过量：{data.get('dose_mg', '')} mg"
+        elif msg == "fluid_bolus_volume_verified":
+            display = "快速补液量确认"
+            result = f"有效补液 {data.get('volume_ml', '')} ml"
+        elif msg == "fluid_bolus_under_volume":
+            display = "快速补液量不足"
+            result = f"{data.get('volume_ml', '')} ml，建议 {data.get('target_min_ml', '')}-{data.get('target_max_ml', '')} ml"
+        elif msg == "fluid_bolus_excess_volume":
+            display = "快速补液量过大"
+            result = f"{data.get('volume_ml', '')} ml，建议 {data.get('target_min_ml', '')}-{data.get('target_max_ml', '')} ml"
+        elif msg == "fluid_bolus_before_epinephrine":
+            display = "补液早于肾上腺素"
+            result = "补液不能替代一线治疗"
+        elif msg == "fluid_bolus_no_iv_access":
+            display = "无静脉通路补液"
+            result = "补液无效"
         elif data.get("gained") is not None:
             result = f"得分 +{data.get('gained')}"
         rows.append({"时间": f"{entry.t}s", "操作": str(display), "结果": str(result)})
@@ -1358,6 +1380,8 @@ def start_simulation(scenario_path: Path, mode: str, seed: int, participant_id: 
     st.session_state.last_ui_snapshot = None
     st.session_state.pending_dose_action_id = ""
     st.session_state.pending_dose_action_label = ""
+    st.session_state.pending_fluid_action_id = ""
+    st.session_state.pending_fluid_action_label = ""
     st.session_state.last_dose_feedback = ""
     st.session_state.last_dose_feedback_level = ""
     st.session_state.result_saved = False
@@ -2508,6 +2532,59 @@ def render_epinephrine_dose_panel(sim: Simulator) -> bool:
 
 
 
+
+
+def render_fluid_volume_panel(sim: Simulator) -> bool:
+    """Render crystalloid bolus volume-confirmation panel.
+
+    Returns True when fluid volume input is pending.
+    """
+    pending_id = st.session_state.get("pending_fluid_action_id", "")
+    if pending_id != "fluid_bolus":
+        return False
+
+    weight = float(getattr(sim.state, "weight_kg", 0) or 0)
+    min_ml = round(10 * weight, 1)
+    max_ml = round(min(20 * weight, 500), 1)
+    st.markdown(
+        "<div class='dose-card'>"
+        "<div class='title'>快速补液：请输入本次晶体液补液量</div>"
+        "<div class='text'>单位为 ml。确认后系统会按体重判断补液量是否合理。</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    if sim.mode == "coach":
+        st.caption(f"训练提示：本例体重 {weight:g} kg；建议晶体液 10–20 ml/kg，即 {min_ml:g}–{max_ml:g} ml，单次最大 500 ml。")
+
+    vol_key = f"fluid_volume_ml_{st.session_state.session_id}_{sim.state.t}"
+    default_ml = float(min(max_ml, max(min_ml, round(10 * weight))))
+    volume_ml = st.number_input(
+        "本次晶体液补液量（ml）",
+        min_value=0.0,
+        max_value=2000.0,
+        value=default_ml,
+        step=10.0,
+        format="%.0f",
+        key=vol_key,
+    )
+    c_ok, c_cancel = st.columns([1, 1], gap="medium")
+    if c_ok.button("确认补液量并执行", type="primary", use_container_width=True):
+        result = sim.apply_fluid_volume(float(volume_ml), action_id=pending_id)
+        st.session_state.last_dose_feedback = str(result.get("message", ""))
+        st.session_state.last_dose_feedback_level = str(result.get("status", ""))
+        st.session_state.pending_fluid_action_id = ""
+        st.session_state.pending_fluid_action_label = ""
+        if str(result.get("status", "")) == "valid":
+            sim.tick()
+        finalize_if_done()
+        st.rerun()
+    if c_cancel.button("取消输入", use_container_width=True):
+        st.session_state.pending_fluid_action_id = ""
+        st.session_state.pending_fluid_action_label = ""
+        st.rerun()
+    return True
+
+
 def render_simulation() -> None:
     sim: Simulator = st.session_state.active_simulator
     scenario: Dict[str, Any] = st.session_state.active_scenario
@@ -2568,6 +2645,7 @@ def render_simulation() -> None:
                     st.info(msg)
 
             dose_pending = render_epinephrine_dose_panel(sim)
+            fluid_pending = render_fluid_volume_panel(sim)
 
             if sim.mode == "coach":
                 flow_warning = str(sim.state.flags.get("last_training_flow_warning", "") or "")
@@ -2586,7 +2664,7 @@ def render_simulation() -> None:
                     button_text = f"{idx + local_index + 1}. {short_label}"
                     with col:
                         flow_ok, flow_reason = sim.check_standard_flow(aid) if hasattr(sim, "check_standard_flow") else (True, "")
-                        disabled = bool(dose_pending)
+                        disabled = bool(dose_pending or fluid_pending)
                         help_text = ""
                         if sim.mode == "coach" and (not flow_ok):
                             help_text = "训练模式流程提醒：" + str(flow_reason)
@@ -2602,6 +2680,10 @@ def render_simulation() -> None:
                             if aid in {"im_epinephrine", "repeat_im_epinephrine"}:
                                 st.session_state.pending_dose_action_id = aid
                                 st.session_state.pending_dose_action_label = display_label
+                                st.rerun()
+                            elif aid == "fluid_bolus":
+                                st.session_state.pending_fluid_action_id = aid
+                                st.session_state.pending_fluid_action_label = display_label
                                 st.rerun()
                             else:
                                 sim.apply_action(aid)

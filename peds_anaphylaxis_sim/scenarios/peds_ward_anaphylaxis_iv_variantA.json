@@ -4,8 +4,8 @@
     "id": "peds_ward_anaphylaxis_iv_variantA",
     "title": "儿科药物诱发过敏反应动态分支仿真｜变体版（皮肤表现不典型）",
     "language": "zh-CN",
-    "version": "1.2.2-guided-flow-open-actions-2025-consensus",
-    "source_note": "基于2025年《严重过敏反应诊断和临床管理专家共识》修订：临床表现按皮肤黏膜、呼吸/气道、胃肠、循环和意识系统随病情进展动态展示；操作按钮全部可选；标准流程仅在训练模式中作为内部引导与偏离提醒。",
+    "version": "1.2.4-infusion-double-reassessment",
+    "source_note": "基于2025年《严重过敏反应诊断和临床管理专家共识》与输液中药物诱发严重过敏反应场景修订：保留既有静脉通路，快速补液需输入容量，设置肌注肾上腺素后第一次复评与告知家属前第二次复评；全部操作可选，标准流程仅用于训练提示、评分与后台判定。",
     "mode_defaults": {
       "coach": true,
       "tick_seconds": 30
@@ -13,7 +13,7 @@
     "script_role": "variant",
     "script_name": "variantA",
     "display_name": "变体版（皮肤表现不典型）",
-    "scoring_basis": "2025中国严重过敏反应专家共识对齐版：儿童肌注肾上腺素剂量、病情进展、复评和升级处理纳入评分/记录；操作不再前台锁定，训练模式显示标准流程提醒，考试模式保持无提示。"
+    "scoring_basis": "V1.2.4输液场景双复评版：儿童肌注肾上腺素0.01 mg/kg、最大0.3 mg；晶体液10–20 ml/kg、单次最大500 ml；第一次复评用于判断是否重复肾上腺素/升级处理，第二次复评用于家属沟通和SBAR前确认。"
   },
   "patient": {
     "age_years": 3,
@@ -38,7 +38,7 @@
     "IV": "心跳或呼吸骤停"
   },
   "baseline": {
-    "time_zero_description": "儿科普通病区，患儿静脉输注药物后数分钟出现皮肤瘙痒/风团样皮疹、潮红，伴咳嗽、烦躁或诉喉部不适。请根据病情进展、生命体征和可获得信息进行处置。",
+    "time_zero_description": "儿科普通病区，患儿正在静脉输注可疑药物，数分钟后出现皮肤瘙痒/风团样皮疹、潮红，伴咳嗽、烦躁或诉喉部不适。请根据病情进展、生命体征和可获得信息进行处置。",
     "vitals": {
       "SpO2": 95.0,
       "HR": 130.0,
@@ -100,7 +100,14 @@
       "advanced_support_called": false,
       "observation_plan": false,
       "epi_excess_dose_event": false,
-      "reassessed_after_epi": false
+      "reassessed_after_epi": false,
+      "fluid_volume_checked": false,
+      "fluid_volume_valid": false,
+      "fluid_under_volume_event": false,
+      "fluid_excess_volume_event": false,
+      "first_reassessment_done": false,
+      "second_reassessment_done": false,
+      "reassessed_before_family": false
     }
   },
   "thresholds": {
@@ -113,7 +120,7 @@
   "actions": [
     {
       "id": "stop_infusion",
-      "label": "停用可疑药物/停止可疑输液（保留抢救通路）",
+      "label": "停用可疑药物",
       "category": "critical",
       "score": {
         "points": 2,
@@ -130,7 +137,7 @@
     },
     {
       "id": "call_help",
-      "label": "呼救并启动院内抢救支援",
+      "label": "呼救",
       "category": "critical",
       "score": {
         "points": 2,
@@ -144,7 +151,7 @@
     },
     {
       "id": "abc_assess",
-      "label": "快速ABC评估（气道/呼吸/循环）",
+      "label": "ABC评估",
       "category": "assessment",
       "score": {
         "points": 1,
@@ -158,7 +165,7 @@
     },
     {
       "id": "high_flow_oxygen",
-      "label": "保持气道通畅并给氧",
+      "label": "开放气道给氧",
       "category": "critical",
       "availability": {
         "when": "flags.help_called or flags.abc_assessed",
@@ -180,7 +187,7 @@
     },
     {
       "id": "shock_position",
-      "label": "平卧/抬高下肢，意识障碍头偏向一侧",
+      "label": "体位管理",
       "category": "support",
       "availability": {
         "when": "flags.stopped_infusion or flags.help_called",
@@ -188,7 +195,7 @@
       },
       "score": {
         "points": 1,
-        "time_window_seconds": 240
+        "time_window_seconds": 180
       },
       "effects": {
         "set_flags": {
@@ -202,7 +209,7 @@
     },
     {
       "id": "connect_monitor",
-      "label": "连接心电/SpO₂监护",
+      "label": "连接监护",
       "category": "critical",
       "availability": {
         "when": "flags.help_called",
@@ -220,7 +227,7 @@
     },
     {
       "id": "check_bp",
-      "label": "测血压并评估末梢灌注",
+      "label": "测血压",
       "category": "critical",
       "availability": {
         "when": "flags.monitor_on or flags.help_called",
@@ -228,7 +235,7 @@
       },
       "score": {
         "points": 1,
-        "time_window_seconds": 300
+        "time_window_seconds": 240
       },
       "effects": {
         "set_flags": {
@@ -238,7 +245,7 @@
     },
     {
       "id": "im_epinephrine",
-      "label": "肌注肾上腺素（需输入剂量）",
+      "label": "肌注肾上腺素",
       "category": "critical_med",
       "availability": {
         "when": "flags.stopped_infusion and flags.help_called and (grade >= 2 or symptoms.wheeze >= 1 or symptoms.stridor >= 1 or vitals.SBP < age_sbp_threshold + 15)",
@@ -275,36 +282,17 @@
       }
     },
     {
-      "id": "confirm_iv_access",
-      "label": "确认/建立静脉通路",
-      "category": "support",
-      "availability": {
-        "when": "flags.help_called",
-        "reason": "启动抢救后应确认或建立静脉通路，用于补液和后续抢救。"
-      },
-      "score": {
-        "points": 1,
-        "time_window_seconds": 300
-      },
-      "effects": {
-        "set_flags": {
-          "iv_access": true,
-          "iv_confirmed": true
-        }
-      }
-    },
-    {
       "id": "fluid_bolus",
-      "label": "晶体液快速补液10–20 ml/kg",
+      "label": "快速补液",
       "category": "support_med",
       "availability": {
         "when": "flags.iv_access and flags.bp_checked and flags.epi_im_given",
-        "reason": "确认静脉通路和血压/灌注后，可根据循环状态准备或实施晶体液快速补液。"
+        "reason": "本场景已存在静脉输液通路；肌注肾上腺素并完成血压/灌注评估后，应按体重输入晶体液补液量。"
       },
       "score": {
-        "points": 1,
+        "points": 2,
         "time_window_seconds": 420,
-        "score_when": "flags.iv_access and flags.bp_checked"
+        "score_when": "flags.iv_access and flags.bp_checked and flags.epi_im_given"
       },
       "effects": {
         "set_flags": {
@@ -322,16 +310,40 @@
       }
     },
     {
-      "id": "bronchodilator",
-      "label": "喘息/支气管痉挛时雾化支气管扩张剂",
-      "category": "support_med",
+      "id": "reassess_first",
+      "label": "第一次复评",
+      "category": "process",
       "availability": {
-        "when": "flags.epi_im_given",
-        "reason": "雾化支气管扩张剂为辅助处理，应在肌注肾上腺素后根据喘息/支气管痉挛情况使用。"
+        "when": "flags.epi_im_given and (t - action_first_time.get('im_epinephrine', 999999)) >= 300",
+        "reason": "第一次复评应在首次肌注肾上腺素后5–15 min进行，用于判断是否缓解及是否需要再次肌注或升级处理。"
       },
       "score": {
         "points": 1,
-        "time_window_seconds": 480
+        "time_window_seconds": 900,
+        "score_when": "flags.epi_im_given and (t - action_first_time.get('im_epinephrine', 999999)) >= 300"
+      },
+      "effects": {
+        "counter_inc": {
+          "reassess_count": 1
+        },
+        "set_flags": {
+          "first_reassessment_done": true,
+          "reassessed_after_epi": true
+        }
+      }
+    },
+    {
+      "id": "bronchodilator",
+      "label": "雾化支扩",
+      "category": "support_med",
+      "availability": {
+        "when": "flags.epi_im_given and flags.first_reassessment_done",
+        "reason": "第一次复评后仍有咳嗽/轻微喘息时，雾化支气管扩张剂作为辅助处理。"
+      },
+      "score": {
+        "points": 1,
+        "time_window_seconds": 99999,
+        "score_when": "flags.epi_im_given and flags.first_reassessment_done"
       },
       "effects": {
         "set_flags": {
@@ -347,100 +359,74 @@
       }
     },
     {
-      "id": "nebulized_epinephrine",
-      "label": "喉鸣/上气道水肿时雾化肾上腺素（辅助）",
-      "category": "support_med_conditional",
-      "availability": {
-        "when": "flags.epi_im_given and symptoms.stridor >= 1",
-        "reason": "雾化肾上腺素仅作为上气道受累辅助处理，不能替代肌注肾上腺素。"
-      },
-      "score": {
-        "points": 0,
-        "time_window_seconds": 99999
-      },
-      "effects": {
-        "set_flags": {
-          "nebulized_epi": true,
-          "neb_epi_effect_ticks": 2
-        },
-        "delta_symptoms": {
-          "stridor": -1,
-          "throat_tightness": -1
-        },
-        "delta_vitals": {
-          "SpO2": 1
-        }
-      }
-    },
-    {
-      "id": "antihistamine_iv",
-      "label": "抗组胺药（辅助，不能替代肾上腺素）",
-      "category": "non_firstline",
-      "availability": {
-        "when": "flags.epi_im_given",
-        "reason": "抗组胺药为辅助治疗，不能先于或替代肌注肾上腺素。"
-      },
-      "score": {
-        "points": 0,
-        "time_window_seconds": 99999,
-        "penalty_if_before": "epi_im_given",
-        "penalty_points": 2
-      },
-      "effects": {
-        "delta_symptoms": {
-          "rash": -1
-        }
-      }
-    },
-    {
-      "id": "steroid",
-      "label": "糖皮质激素（辅助，不能替代肾上腺素）",
-      "category": "non_firstline",
-      "availability": {
-        "when": "flags.epi_im_given",
-        "reason": "糖皮质激素为二线/辅助治疗，不能替代首选肌注肾上腺素。"
-      },
-      "score": {
-        "points": 0,
-        "time_window_seconds": 99999,
-        "penalty_if_before": "epi_im_given",
-        "penalty_points": 2
-      },
-      "effects": {
-        "set_flags": {
-          "steroid_given": true
-        }
-      }
-    },
-    {
-      "id": "reassess",
-      "label": "5–15 min复评并记录",
+      "id": "reassess_second",
+      "label": "第二次复评",
       "category": "process",
       "availability": {
-        "when": "flags.epi_im_given or t >= 180",
-        "reason": "复评应在关键处置后进行，重点记录呼吸、循环、意识和皮肤黏膜变化。"
+        "when": "flags.first_reassessment_done and (flags.bronchodilator_neb or symptoms.wheeze == 0 or t >= 420)",
+        "reason": "第二次复评应在告知家属前进行，用于确认生命体征、咳喘改善、循环灌注和意识状态。"
       },
       "score": {
         "points": 1,
-        "time_window_seconds": 600,
-        "score_when": "flags.epi_im_given or t >= 180"
+        "time_window_seconds": 99999,
+        "score_when": "flags.first_reassessment_done"
       },
       "effects": {
         "counter_inc": {
           "reassess_count": 1
         },
         "set_flags": {
-          "reassessed_after_epi": true
+          "second_reassessment_done": true,
+          "reassessed_before_family": true
+        }
+      }
+    },
+    {
+      "id": "family_explain",
+      "label": "告知家属",
+      "category": "crm",
+      "availability": {
+        "when": "flags.second_reassessment_done and flags.help_called",
+        "reason": "告知家属应在第二次复评后进行，避免在关键抢救未完成时分散注意力。"
+      },
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999,
+        "score_when": "flags.second_reassessment_done and flags.help_called and flags.epi_im_given"
+      },
+      "effects": {
+        "set_flags": {
+          "family_communication": true
+        }
+      }
+    },
+    {
+      "id": "sbar_handoff",
+      "label": "SBAR交接",
+      "category": "crm",
+      "availability": {
+        "when": "flags.second_reassessment_done and flags.family_communication",
+        "reason": "第二次复评并告知家属后，再进行SBAR交接与后续观察安排。"
+      },
+      "score": {
+        "points": 1,
+        "time_window_seconds": 99999,
+        "score_when": "flags.second_reassessment_done and flags.family_communication and grade <= 2"
+      },
+      "effects": {
+        "set_flags": {
+          "sbar_handoff": true,
+          "observation_plan": true
         }
       }
     },
     {
       "id": "repeat_im_epinephrine",
-      "label": "复评仍未缓解：再次肌注肾上腺素",
+      "label": "再次肌注肾上腺素",
       "category": "critical_med_repeat",
       "availability": {
-        "when": "flags.epi_im_given and flags.reassess_count >= 1 and (t - action_first_time.get('im_epinephrine', 999999)) >= 300 and (grade >= 2 or symptoms.wheeze >= 1 or symptoms.stridor >= 1 or vitals.SBP < age_sbp_threshold)",
-        "reason": "首次肌注后5–15 min复评仍未缓解时，才考虑重复肌注肾上腺素。"
+        "when": "flags.epi_im_given and flags.first_reassessment_done and (t - action_first_time.get('im_epinephrine', 999999)) >= 300 and (grade >= 2 or symptoms.wheeze >= 1 or symptoms.stridor >= 1 or vitals.SBP < age_sbp_threshold)",
+        "reason": "首次肌注肾上腺素后5–15 min第一次复评仍未缓解，才考虑再次肌注肾上腺素。"
       },
       "score": {
         "points": 0,
@@ -471,11 +457,11 @@
     },
     {
       "id": "call_icu_team",
-      "label": "两次肾上腺素/补液仍无缓解：联系急诊/PICU/ICU",
+      "label": "联系高级支持",
       "category": "escalation",
       "availability": {
-        "when": "flags.epi_im_doses >= 2 and (flags.fluid_bolus_given or grade >= 3)",
-        "reason": "两次肾上腺素及补液后仍无缓解，应升级至高级生命支持团队。"
+        "when": "(flags.epi_im_doses >= 2 and flags.fluid_bolus_given) or grade >= 3",
+        "reason": "两次肾上腺素及补液仍无缓解，或病情进入濒危/重度状态时，应联系急诊/PICU/ICU。"
       },
       "score": {
         "points": 0,
@@ -488,47 +474,74 @@
       }
     },
     {
-      "id": "family_explain",
-      "label": "简短告知家属当前抢救与转运安排",
-      "category": "crm",
+      "id": "nebulized_epinephrine",
+      "label": "雾化肾上腺素",
+      "category": "support_med_conditional",
       "availability": {
-        "when": "flags.help_called",
-        "reason": "家属沟通应在抢救团队启动后简短进行，避免影响关键抢救。"
+        "when": "flags.epi_im_given and symptoms.stridor >= 1",
+        "reason": "雾化肾上腺素仅作为上气道受累辅助处理，不能替代肌注肾上腺素。"
       },
       "score": {
-        "points": 1,
-        "time_window_seconds": 600,
-        "score_when": "flags.help_called and flags.epi_im_given"
+        "points": 0,
+        "time_window_seconds": 99999
       },
       "effects": {
         "set_flags": {
-          "family_communication": true
+          "nebulized_epi": true,
+          "neb_epi_effect_ticks": 2
+        },
+        "delta_symptoms": {
+          "stridor": -1,
+          "throat_tightness": -1
+        },
+        "delta_vitals": {
+          "SpO2": 1
         }
       }
     },
     {
-      "id": "sbar_handoff",
-      "label": "SBAR交接与后续观察安排",
-      "category": "crm",
+      "id": "antihistamine_iv",
+      "label": "抗组胺药",
+      "category": "non_firstline",
       "availability": {
-        "when": "flags.reassess_count >= 2 and grade <= 2",
-        "reason": "完成连续复评并初步稳定后，再进行SBAR交接和观察安排。"
+        "when": "flags.epi_im_given",
+        "reason": "抗组胺药为辅助治疗，不能先于或替代肌注肾上腺素。"
       },
       "score": {
-        "points": 1,
+        "points": 0,
         "time_window_seconds": 99999,
-        "score_when": "flags.reassess_count >= 2 and grade <= 2"
+        "penalty_if_before": "epi_im_given",
+        "penalty_points": 2
+      },
+      "effects": {
+        "delta_symptoms": {
+          "rash": -1
+        }
+      }
+    },
+    {
+      "id": "steroid",
+      "label": "糖皮质激素",
+      "category": "non_firstline",
+      "availability": {
+        "when": "flags.epi_im_given",
+        "reason": "糖皮质激素为二线/辅助治疗，不能替代首选肌注肾上腺素。"
+      },
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999,
+        "penalty_if_before": "epi_im_given",
+        "penalty_points": 2
       },
       "effects": {
         "set_flags": {
-          "sbar_handoff": true,
-          "observation_plan": true
+          "steroid_given": true
         }
       }
     },
     {
       "id": "continue_infusion",
-      "label": "继续输入可疑药物",
+      "label": "继续可疑药物",
       "category": "distractor",
       "effects": {
         "set_flags": {
@@ -872,7 +885,7 @@
       },
       {
         "name": "stabilization_after_control",
-        "when": "flags.epi_im_given and flags.oxygen_on and flags.stopped_infusion and t >= 180 and (vitals.SpO2 < 99 or vitals.SBP < 95 or symptoms.rash >= 1 or symptoms.wheeze >= 1 or symptoms.stridor >= 1)",
+        "when": "flags.epi_im_given and flags.oxygen_on and flags.stopped_infusion and t >= 180 and (vitals.SpO2 < 99 or vitals.SBP < 95 or symptoms.rash >= 1 or symptoms.wheeze >= 1 or symptoms.stridor >= 1 or symptoms.cough >= 1)",
         "effects": {
           "delta_vitals": {
             "SpO2": 2,
@@ -907,9 +920,9 @@
     ]
   },
   "end_conditions": {
-    "success_when": "not flags.dead and flags.epi_im_given and flags.stopped_infusion and flags.oxygen_on and flags.help_called and flags.monitor_on and flags.bp_checked and flags.reassess_count >= 2 and flags.family_communication and flags.sbar_handoff and grade <= 1 and vitals.SpO2 >= 95 and vitals.SBP >= age_sbp_threshold and t >= 300",
+    "success_when": "not flags.dead and flags.epi_im_given and flags.stopped_infusion and flags.oxygen_on and flags.help_called and flags.monitor_on and flags.bp_checked and flags.fluid_bolus_given and flags.first_reassessment_done and flags.second_reassessment_done and flags.family_communication and flags.sbar_handoff and grade <= 1 and vitals.SpO2 >= 95 and vitals.SBP >= age_sbp_threshold and t >= 300",
     "failure_when": "(flags.dead) or flags.epi_overdose_event",
-    "max_time_seconds": 600
+    "max_time_seconds": 1200
   },
   "reporting": {
     "observe_recommendation": {
@@ -922,8 +935,8 @@
     "min_reassess_count_recommended": 2,
     "guided_prompts": [
       {
-        "text": "步骤1：停用可疑药物/停止可疑输液，同时保留抢救通路。",
-        "reason": "立即去除可疑过敏原，同时避免误拔静脉通路影响补液和抢救用药。",
+        "text": "步骤1：停用可疑药物，保留原静脉通路。",
+        "reason": "本病例为输液过程中发生反应，关键是立即停止可疑药物暴露，同时保留抢救通路。",
         "done_when": "flags.stopped_infusion and flags.iv_access"
       },
       {
@@ -933,62 +946,63 @@
       },
       {
         "text": "步骤3：快速ABC评估。",
-        "reason": "判断气道、呼吸和循环是否受累，确认是否进入严重过敏反应处置路径。",
+        "reason": "判断气道、呼吸、循环和意识是否受累。",
         "done_when": "flags.abc_assessed or 'abc_assess' in action_first_time"
       },
       {
-        "text": "步骤4：保持气道通畅并给氧。",
+        "text": "步骤4：开放气道并给氧。",
         "reason": "气道/呼吸受累可迅速恶化，应尽早给氧并持续观察SpO₂和呼吸表现。",
         "done_when": "flags.oxygen_on"
       },
       {
         "text": "步骤5：体位管理。",
-        "reason": "平卧、抬高下肢有助于改善回心血量；意识障碍时头偏向一侧防误吸。",
+        "reason": "平卧、抬高下肢有助于改善回心血量；意识障碍或呕吐风险时头偏向一侧。",
         "done_when": "flags.positioned"
       },
       {
-        "text": "步骤6：连接监护并测血压/灌注。",
+        "text": "步骤6：连接监护并测血压。",
         "reason": "心率、SpO₂、血压和末梢灌注是判断进展、补液和复评的依据。",
         "done_when": "flags.monitor_on and flags.bp_checked"
       },
       {
         "text": "步骤7：肌注肾上腺素。",
-        "reason": "诊断或高度疑似严重过敏反应时，肌注肾上腺素是一线关键处置，不能被抗组胺药或激素替代。",
+        "reason": "肌注肾上腺素是一线关键处置，不能被抗组胺药或糖皮质激素替代。",
         "done_when": "flags.epi_im_given"
       },
       {
-        "text": "步骤8：确认/建立静脉通路并根据循环状态补液。",
-        "reason": "存在低血压、末梢灌注差或休克表现时，应尽早进行晶体液容量复苏。",
-        "done_when": "flags.iv_access and (flags.fluid_bolus_given or vitals.SBP >= age_sbp_threshold)"
+        "text": "步骤8：输入晶体液快速补液量。",
+        "reason": "循环受累时应按10–20 ml/kg进行容量复苏，单次最大500 ml；补液不能替代肾上腺素。",
+        "done_when": "flags.fluid_bolus_given"
       },
       {
-        "text": "步骤9：按表现给予辅助治疗。",
-        "reason": "喘息时可雾化支气管扩张剂；喉鸣/上气道水肿时可考虑雾化肾上腺素，但均不能替代肌注肾上腺素。",
-        "done_when": "flags.bronchodilator_neb or flags.nebulized_epi or (symptoms.wheeze == 0 and symptoms.stridor == 0)"
+        "text": "步骤9：第一次复评。",
+        "reason": "首次肌注肾上腺素后5–15 min复评呼吸、循环、意识、皮肤黏膜、SpO₂和血压，判断是否需要再次肌注或升级处理。",
+        "done_when": "flags.first_reassessment_done"
       },
       {
-        "text": "步骤10：5–15 min复评并记录。",
-        "reason": "复评呼吸、循环、意识和皮肤黏膜表现；若仍未缓解，需要考虑重复肌注肾上腺素。",
-        "done_when": "flags.reassess_count >= 2"
+        "text": "步骤10：根据复评处理持续咳嗽/喘息。",
+        "reason": "若仍有咳嗽、喘息或支气管痉挛，可给予雾化支气管扩张剂；没有雾化处理时应继续记录呼吸症状。",
+        "done_when": "flags.bronchodilator_neb or symptoms.wheeze == 0 or t >= 420"
       },
       {
-        "text": "步骤11：必要时升级处理。",
-        "reason": "两次肾上腺素及补液后仍无缓解，应呼叫急诊/PICU/ICU团队提供高级生命支持。",
-        "done_when": "flags.advanced_support_called or flags.epi_im_doses < 2 or grade <= 2"
+        "text": "步骤11：第二次复评。",
+        "reason": "告知家属前再次确认当前生命体征、咳喘改善、循环灌注和意识状态。",
+        "done_when": "flags.second_reassessment_done"
       },
       {
-        "text": "步骤12：家属沟通、SBAR交接与后续观察安排。",
-        "reason": "稳定后需交代诱因、时间轴、给药剂量/次数、生命体征变化、观察与转运重点。",
+        "text": "步骤12：告知家属并进行SBAR交接。",
+        "reason": "稳定后交代诱因、时间轴、给药剂量/次数、补液量、生命体征变化、观察与转运重点。",
         "done_when": "flags.family_communication and flags.sbar_handoff"
       }
     ]
   },
   "scoring_notes": {
-    "profile": "v1.2.2_guided_flow_open_actions_2025_consensus",
+    "profile": "v1.2.4_infusion_double_reassessment",
     "total_score": 20,
-    "principle": "救命核心操作优先：去除可疑诱因、呼救、ABC、给氧、监护/血压、早期肌注肾上腺素、补液、复评与交接。辅助治疗不能替代肌注肾上腺素。",
+    "principle": "输液中药物诱发严重过敏反应场景：立即停用可疑药物并保留抢救通路，呼救，ABC评估，给氧，体位，监护/血压，早期肌注肾上腺素，输入晶体液补液量，肌注后5–15 min第一次复评，根据复评处理残留咳喘，告知家属前第二次复评，随后家属沟通和SBAR交接。",
     "dose_rule": "本系统面向2–11岁儿童模拟病例，肌注肾上腺素按0.01 mg/kg计算，单次最大0.3 mg；低于目标剂量判定为无效，高于目标剂量判定为剂量不准确，超过0.3 mg判定为严重用药安全事件。",
-    "planning_rule": "所有操作按钮均保持可选，避免因前台锁定影响受试者真实操作路径；训练模式下系统依据2025共识内置标准流程，显示当前推荐步骤及偏离提醒；考试模式不显示流程提示，仅记录操作路径与评分结果。"
+    "planning_rule": "所有操作按钮均保持可选，避免因前台锁定影响受试者真实操作路径；训练模式下系统依据2025共识内置标准流程，显示当前推荐步骤及偏离提醒；考试模式不显示流程提示，仅记录操作路径与评分结果。",
+    "fluid_rule": "快速补液需输入具体容量；合理范围为10–20 ml/kg，单次最大500 ml。低于10 ml/kg判定为循环支持不足，超过20 ml/kg或500 ml判定为补液不当/容量风险。"
   },
   "clinical_progression": {
     "1": {

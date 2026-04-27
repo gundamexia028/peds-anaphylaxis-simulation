@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (Training v1.2.2 guided-flow/open-actions)
+Pediatric Ward Anaphylaxis Simulator (Training v1.2.4 infusion/double-reassessment)
 
 特点（培训版）：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
@@ -304,6 +304,12 @@ class Simulator:
             spo2 = float(v.get("SpO2", 100))
             if spo2 < 95:
                 resp.append(f"SpO₂下降至{spo2:.0f}%")
+        # V1.2.4: if bronchodilator nebulization has not been performed,
+        # do not show a completely symptom-free respiratory narrative after
+        # epinephrine/oxygen. Keep residual cough/mild wheeze visible for
+        # reassessment and teaching logic.
+        if f.get("epi_im_given", False) and not f.get("bronchodilator_neb", False) and not (f.get("dead", False) or f.get("cardiac_arrest", False)):
+            resp.append("仍有咳嗽/轻微喘息")
 
         gi = []
         if s.get("gi", 0) >= 1:
@@ -346,7 +352,7 @@ class Simulator:
             parts.append("神经/意识：" + "、".join(dict.fromkeys(neuro)))
 
         if not parts:
-            parts.append("暂无明显主观异常，需结合暴露史和生命体征持续观察。")
+            parts.append("生命体征趋于稳定，仍需继续观察。")
 
         dominant = {
             1: "以皮肤黏膜/前驱表现为主，需警惕快速进展。",
@@ -578,6 +584,97 @@ class Simulator:
         self.apply_action(action_id)
         return {"status": "valid", "message": f"剂量 {dose:.2f} mg 已确认有效：按肌注肾上腺素处置执行。", "dose_mg": dose, "target_dose_mg": target}
 
+    def apply_fluid_volume(self, volume_ml: float, action_id: str = "fluid_bolus") -> Dict[str, Any]:
+        """Apply crystalloid bolus only after volume verification.
+
+        V1.2.4 infusion scenario rule:
+        - The child already has an IV line because the trigger occurs during infusion.
+        - Crystalloid bolus should be 10–20 ml/kg, capped at 500 ml for one bolus.
+        - Fluids support circulation but do not replace IM epinephrine.
+        """
+        try:
+            vol = float(volume_ml)
+        except Exception:
+            vol = 0.0
+
+        flow_ok, flow_reason = self.check_standard_flow(action_id)
+        if (not flow_ok) and self.mode == "coach":
+            self.state.flags["training_flow_deviation_count"] = int(self.state.flags.get("training_flow_deviation_count", 0)) + 1
+            self.state.flags["last_training_flow_warning"] = flow_reason
+            self._log("action", "training_flow_warning", {"action_id": action_id, "reason": flow_reason})
+
+        weight = float(self.state.weight_kg)
+        min_ml = round(10 * weight, 1)
+        max_ml = round(min(20 * weight, 500), 1)
+
+        self.state.flags["fluid_last_volume_ml"] = round(vol, 1)
+        self.state.flags["fluid_target_min_ml"] = min_ml
+        self.state.flags["fluid_target_max_ml"] = max_ml
+        self.state.flags["fluid_volume_checked"] = True
+
+        if not self.state.flags.get("epi_im_given", False):
+            self.state.flags["fluid_before_epi_event"] = True
+            self._log("action", "fluid_bolus_before_epinephrine", {
+                "action_id": action_id,
+                "volume_ml": round(vol, 1),
+                "target_min_ml": min_ml,
+                "target_max_ml": max_ml,
+                "result": "fluid_cannot_replace_epinephrine",
+                "gained": 0,
+            })
+            return {"status": "before_epi", "message": "补液不能替代肌注肾上腺素：请先完成一线急救药物处理。", "volume_ml": vol, "target_min_ml": min_ml, "target_max_ml": max_ml}
+
+        if not self.state.flags.get("iv_access", False):
+            self.state.flags["fluid_without_iv_event"] = True
+            self._log("action", "fluid_bolus_no_iv_access", {
+                "action_id": action_id,
+                "volume_ml": round(vol, 1),
+                "target_min_ml": min_ml,
+                "target_max_ml": max_ml,
+                "result": "invalid_no_iv_access",
+                "gained": 0,
+            })
+            return {"status": "no_iv", "message": "当前静脉通路已被拔除或不可用，补液无效。", "volume_ml": vol, "target_min_ml": min_ml, "target_max_ml": max_ml}
+
+        if vol < min_ml:
+            self.state.flags["fluid_under_volume_event"] = True
+            self._log("action", "fluid_bolus_under_volume", {
+                "action_id": action_id,
+                "volume_ml": round(vol, 1),
+                "target_min_ml": min_ml,
+                "target_max_ml": max_ml,
+                "result": "under_resuscitation",
+                "gained": 0,
+            })
+            return {"status": "under", "message": f"补液量 {vol:.0f} ml 低于本例建议下限 {min_ml:.0f} ml：判定为循环支持不足，本次快速补液不得分。", "volume_ml": vol, "target_min_ml": min_ml, "target_max_ml": max_ml}
+
+        if vol > max_ml:
+            self.state.flags["fluid_excess_volume_event"] = True
+            self._log("action", "fluid_bolus_excess_volume", {
+                "action_id": action_id,
+                "volume_ml": round(vol, 1),
+                "target_min_ml": min_ml,
+                "target_max_ml": max_ml,
+                "result": "excess_volume_risk",
+                "gained": 0,
+            })
+            # A too-large bolus may slightly improve BP but is not awarded.
+            self.apply_effects({"delta_vitals": {"SBP": 3, "DBP": 1, "HR": -1}})
+            self.state.grade = self.compute_grade()
+            return {"status": "excess", "message": f"补液量 {vol:.0f} ml 超过本例建议上限 {max_ml:.0f} ml：判定为补液不当/容量风险，本次不得分。", "volume_ml": vol, "target_min_ml": min_ml, "target_max_ml": max_ml}
+
+        self.state.flags["fluid_volume_valid"] = True
+        self._log("action", "fluid_bolus_volume_verified", {
+            "action_id": action_id,
+            "volume_ml": round(vol, 1),
+            "target_min_ml": min_ml,
+            "target_max_ml": max_ml,
+            "result": "effective",
+        })
+        self.apply_action(action_id)
+        return {"status": "valid", "message": f"补液量 {vol:.0f} ml 已确认有效：本例合理范围为 {min_ml:.0f}–{max_ml:.0f} ml。", "volume_ml": vol, "target_min_ml": min_ml, "target_max_ml": max_ml}
+
+
     def is_done(self) -> Tuple[bool, str]:
         ctx = {
             "t": self.state.t,
@@ -618,6 +715,10 @@ class Simulator:
             issues.append("未连接监护")
         if not f.get("bp_checked", False):
             issues.append("未测量血压/灌注评估")
+        if not f.get("first_reassessment_done", False):
+            issues.append("未完成肌注肾上腺素后第一次复评")
+        if not f.get("second_reassessment_done", False):
+            issues.append("未完成告知家属前第二次复评")
         if int(f.get("reassess_count", 0)) < self.min_reassess_recommended:
             issues.append("复评次数不足")
         if not f.get("family_communication", False):
@@ -630,6 +731,14 @@ class Simulator:
             issues.append("肾上腺素剂量高于本例目标剂量/剂量不准确")
         if f.get("epi_overdose_event", False):
             issues.append("肾上腺素剂量超过0.3 mg/严重用药安全事件")
+        if f.get("fluid_before_epi_event", False):
+            issues.append("补液早于肾上腺素/不能替代一线治疗")
+        if f.get("fluid_under_volume_event", False):
+            issues.append("晶体液补液量不足")
+        if f.get("fluid_excess_volume_event", False):
+            issues.append("晶体液补液量过大/容量风险")
+        if f.get("fluid_without_iv_event", False):
+            issues.append("拔除静脉通路后补液无效")
         return issues
 
     def build_report(self) -> Dict[str, Any]:
@@ -676,8 +785,13 @@ class Simulator:
                 "epi_last_dose_mg": self.state.flags.get("epi_last_dose_mg", None),
                 "epi_target_dose_mg": self.state.flags.get("epi_target_dose_mg", None),
                 "epi_max_single_mg": self.state.flags.get("epi_max_single_mg", None),
-                "iv_access_confirmed": t_of("confirm_iv_access"),
                 "fluid": t_of("fluid_bolus"),
+                "fluid_last_volume_ml": self.state.flags.get("fluid_last_volume_ml", None),
+                "fluid_target_min_ml": self.state.flags.get("fluid_target_min_ml", None),
+                "fluid_target_max_ml": self.state.flags.get("fluid_target_max_ml", None),
+                "fluid_volume_valid": self.state.flags.get("fluid_volume_valid", False),
+                "first_reassessment": t_of("reassess_first"),
+                "second_reassessment": t_of("reassess_second"),
                 "advanced_support": t_of("call_icu_team"),
                 "family_communication": t_of("family_explain"),
                 "sbar_handoff": t_of("sbar_handoff"),
