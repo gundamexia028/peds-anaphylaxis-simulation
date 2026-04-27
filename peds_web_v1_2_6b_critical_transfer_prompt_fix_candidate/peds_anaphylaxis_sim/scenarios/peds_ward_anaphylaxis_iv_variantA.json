@@ -1,0 +1,957 @@
+{
+  "schema_version": 1,
+  "scenario": {
+    "id": "peds_ward_anaphylaxis_iv_variantA",
+    "title": "儿科药物诱发过敏反应动态分支虚拟仿真｜变体版（皮肤表现不典型）",
+    "language": "zh-CN",
+    "version": "V1.2.6b-critical-transfer-prompt-fix-candidate",
+    "source_note": "基于V1.2.6a路径，去除考试模式下心肺骤停/CPR相关操作提示，并将CPR+球囊面罩加压给氧+联系高级生命支持后的ROSC状态设为危重抢救后转入PICU终点。",
+    "mode_defaults": {
+      "coach": true,
+      "tick_seconds": 30
+    },
+    "script_role": "variant",
+    "script_name": "variantA",
+    "display_name": "变体版（皮肤表现不典型）",
+    "scoring_basis": "V1.2.6b: 25-point standard path unchanged; steroid remains scored; airway obstruction/BVM/ALS/CPR remain conditional branch records; exam-mode clinical display is objective only; critical branch ends as transfer to PICU after CPR + BVM + ALS contact."
+  },
+  "patient": {
+    "age_years": 3,
+    "weight_kg": 15,
+    "setting": "儿科普通病区（床旁）",
+    "trigger": "静脉输注药物开始后约5-10分钟出现症状"
+  },
+  "diagnosis_criteria": {
+    "criterion_1": "皮肤/黏膜症状 +（呼吸道症状 或 血压下降/器官功能不全 或 严重胃肠道症状）",
+    "criterion_2": "暴露已知或可疑变应原后数分钟至数小时内出现：血压降低 或 支气管痉挛 或 喉部症状；可无典型皮肤黏膜症状",
+    "hypotension_definition": {
+      "infant_1m_to_1y_sbp_lt": 70,
+      "age_1_to_10_sbp_lt_formula": "70 + 2*age_years",
+      "age_11_to_17_sbp_lt": 90,
+      "or_drop_from_baseline_pct": 30
+    }
+  },
+  "grading": {
+    "I": "皮肤/黏膜为主，生命体征稳定；无明显呼吸/循环受累",
+    "II": "出现明显呼吸受累（喘鸣/喉鸣/SpO2下降等）和/或血压下降（早期）",
+    "III": "重度呼吸受累或循环衰竭（严重低氧/明显低血压/意识改变等）",
+    "IV": "心跳或呼吸骤停"
+  },
+  "baseline": {
+    "time_zero_description": "儿科病区，患儿输液过程中出现不适，主要表现为咳嗽、声音改变/喉部不适、呼吸不畅，哭闹/烦躁；皮肤表现不明显。请根据当前临床表现与可获得的数据进行处置。",
+    "vitals": {
+      "SpO2": 95.0,
+      "HR": 130.0,
+      "RR": 32.0,
+      "SBP": 97.0,
+      "DBP": 59.0,
+      "Temp": 37.8
+    },
+    "symptoms": {
+      "rash": 0,
+      "angioedema": 0,
+      "wheeze": 1,
+      "stridor": 1,
+      "gi": 0,
+      "consciousness": 0
+    },
+    "flags": {
+      "infusion_running": true,
+      "stopped_infusion": false,
+      "help_called": false,
+      "oxygen_on": false,
+      "positioned": false,
+      "monitor_on": false,
+      "bp_checked": false,
+      "iv_confirmed": true,
+      "epi_im_given": false,
+      "epi_im_doses": 0,
+      "fluid_bolus_given": false,
+      "bronchodilator_neb": false,
+      "nebulized_epi": false,
+      "reassess_count": 0,
+      "family_communication": false,
+      "sbar_handoff": false,
+      "dangerous_output_event": 0,
+      "epi_effect_ticks": 0,
+      "fluid_effect_ticks": 0,
+      "neb_epi_effect_ticks": 0,
+      "bronchodilator_effect_ticks": 0,
+      "iv_access": true,
+      "bp_ordered": false,
+      "airway_compromise": false,
+      "epi_dose_checked": false,
+      "epi_underdose_event": false,
+      "epi_overdose_event": false,
+      "tachycardia_heart_failure": false,
+      "epi_im_attempts": 0,
+      "epi_last_dose_mg": 0.0,
+      "epi_target_dose_mg": 0.0,
+      "dead": false,
+      "rescue_access_preserved": true,
+      "fluid_bolus_volume_ml": 0.0,
+      "fluid_min_ml": 0.0,
+      "fluid_max_ml": 0.0,
+      "fluid_bolus_valid": false,
+      "fluid_bolus_under": false,
+      "fluid_bolus_over": false,
+      "fluid_without_epi": false,
+      "first_reassessment_done": false,
+      "second_reassessment_done": false,
+      "premature_first_reassessment": false,
+      "premature_second_reassessment": false,
+      "late_second_reassessment": false,
+      "family_before_second_reassess": false,
+      "family_sbar_completed": false,
+      "repeat_epi_indicated": false,
+      "repeat_epi_given": false,
+      "repeat_epi_not_indicated": false,
+      "repeat_epi_premature": false,
+      "advanced_support_contacted": false,
+      "advanced_support_indicated": false,
+      "cpr_done": false,
+      "cpr_indicated": false,
+      "epi_dose_high_event": false,
+      "serious_medication_error": false,
+      "nebulized_epi_not_indicated": false,
+      "bronchospasm_residual": true,
+      "initial_circulation_support_complete": false,
+      "operation_count": 0,
+      "pre_epi_core_steps_completed": 0,
+      "epinephrine_delay_after_core_steps": false,
+      "adrenaline_delay_event": false,
+      "severe_deterioration_triggered": false,
+      "airway_risk_increasing": false,
+      "shock_risk_increasing": false,
+      "airway_obstruction_triggered": false,
+      "bvm_required": false,
+      "bvm_done": false,
+      "bvm_not_indicated": false,
+      "bvm_effect_ticks": 0,
+      "steroid_given": false,
+      "steroid_valid": false,
+      "steroid_timing_valid": false,
+      "steroid_without_epi": false,
+      "steroid_before_fluid": false,
+      "steroid_dose_checked": false,
+      "steroid_dose_mg": 0.0,
+      "steroid_min_mg": 0.0,
+      "steroid_max_mg": 0.0,
+      "steroid_under": false,
+      "steroid_over": false,
+      "steroid_effect_ticks": 0,
+      "cardiac_arrest": false,
+      "cpr_required": false,
+      "resuscitation_required": false,
+      "resuscitation_in_progress": false,
+      "resuscitation_initiated_correctly": false,
+      "resuscitation_rosc": false,
+      "resuscitation_rosc_time_sec": null,
+      "cardiac_arrest_time_sec": null,
+      "post_arrest_care_required": false
+    }
+  },
+  "thresholds": {
+    "SpO2_low": 94,
+    "SpO2_critical": 90,
+    "SpO2_arrest": 70,
+    "hypotension_sbp_drop_pct": 30,
+    "grade_III_sbp_lt_age_threshold": true
+  },
+  "actions": [
+    {
+      "id": "stop_infusion",
+      "label": "停用可疑药物并保留通路",
+      "category": "critical_source_control",
+      "score": {
+        "points": 2,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "stopped_infusion": true,
+          "infusion_running": false,
+          "rescue_access_preserved": true
+        }
+      }
+    },
+    {
+      "id": "call_help",
+      "label": "呼救",
+      "category": "critical_team",
+      "score": {
+        "points": 2,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "help_called": true
+        }
+      }
+    },
+    {
+      "id": "abc_assess",
+      "label": "ABC评估",
+      "category": "critical_assessment",
+      "score": {
+        "points": 1,
+        "time_window_seconds": 99999
+      },
+      "effects": {}
+    },
+    {
+      "id": "high_flow_oxygen",
+      "label": "开放气道给氧",
+      "category": "critical_airway",
+      "score": {
+        "points": 2,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "oxygen_on": true
+        },
+        "delta_vitals": {
+          "SpO2": 4
+        }
+      }
+    },
+    {
+      "id": "shock_position",
+      "label": "体位管理",
+      "category": "critical_support",
+      "score": {
+        "points": 1,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "positioned": true
+        },
+        "delta_vitals": {
+          "SBP": 4,
+          "DBP": 2
+        }
+      }
+    },
+    {
+      "id": "connect_monitor",
+      "label": "连接监护",
+      "category": "critical_monitor",
+      "score": {
+        "points": 1,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "monitor_on": true
+        }
+      }
+    },
+    {
+      "id": "check_bp",
+      "label": "测血压",
+      "category": "critical_circulation",
+      "score": {
+        "points": 1,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "bp_ordered": true
+        }
+      }
+    },
+    {
+      "id": "im_epinephrine",
+      "label": "肌注肾上腺素",
+      "category": "critical_medication",
+      "score": {
+        "points": 4,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "epi_im_given": true,
+          "epi_effect_ticks": 6
+        },
+        "counter_inc": {
+          "epi_im_doses": 1
+        },
+        "delta_vitals": {
+          "SBP": 12,
+          "DBP": 6,
+          "HR": -8,
+          "SpO2": 4,
+          "RR": -4
+        },
+        "delta_symptoms": {
+          "wheeze": -2,
+          "stridor": -2,
+          "rash": -1,
+          "angioedema": -1,
+          "consciousness": -1
+        }
+      }
+    },
+    {
+      "id": "fluid_bolus",
+      "label": "快速扩容",
+      "category": "critical_circulation",
+      "score": {
+        "points": 2,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "fluid_bolus_given": true,
+          "fluid_effect_ticks": 4
+        },
+        "delta_vitals": {
+          "SBP": 10,
+          "DBP": 5,
+          "HR": -3
+        }
+      }
+    },
+    {
+      "id": "reassess_first",
+      "label": "第一次复评",
+      "category": "critical_reassessment",
+      "score": {
+        "points": 1,
+        "time_window_seconds": 99999
+      },
+      "effects": {}
+    },
+    {
+      "id": "bronchodilator",
+      "label": "雾化支扩",
+      "category": "critical_respiratory_support",
+      "score": {
+        "points": 1,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "bronchodilator_neb": true,
+          "bronchodilator_effect_ticks": 2
+        },
+        "delta_symptoms": {
+          "wheeze": -1
+        },
+        "delta_vitals": {
+          "SpO2": 1
+        }
+      }
+    },
+    {
+      "id": "steroid",
+      "label": "糖皮质激素",
+      "category": "critical_adjunct_medication",
+      "score": {
+        "points": 5,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "steroid_given": true
+        }
+      }
+    },
+    {
+      "id": "reassess_second",
+      "label": "第二次复评",
+      "category": "critical_reassessment",
+      "score": {
+        "points": 1,
+        "time_window_seconds": 99999
+      },
+      "effects": {}
+    },
+    {
+      "id": "family_explain",
+      "label": "告知家属",
+      "category": "communication",
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "family_communication": true
+        }
+      }
+    },
+    {
+      "id": "sbar_handoff",
+      "label": "SBAR交接",
+      "category": "communication",
+      "score": {
+        "points": 1,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "sbar_handoff": true
+        }
+      }
+    },
+    {
+      "id": "repeat_epinephrine",
+      "label": "再次肌注肾上腺素",
+      "category": "conditional_special",
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "epi_im_given": true,
+          "epi_effect_ticks": 6
+        },
+        "counter_inc": {
+          "epi_im_doses": 1
+        },
+        "delta_vitals": {
+          "SBP": 12,
+          "DBP": 6,
+          "HR": -8,
+          "SpO2": 4,
+          "RR": -4
+        },
+        "delta_symptoms": {
+          "wheeze": -2,
+          "stridor": -2,
+          "rash": -1,
+          "angioedema": -1,
+          "consciousness": -1
+        }
+      }
+    },
+    {
+      "id": "advanced_support",
+      "label": "联系高级支持",
+      "category": "conditional_special",
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "advanced_support_contacted": true
+        }
+      }
+    },
+    {
+      "id": "bvm_ventilation",
+      "label": "球囊加压给氧",
+      "category": "conditional_special",
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "bvm_done": true,
+          "bvm_effect_ticks": 2
+        },
+        "delta_vitals": {
+          "SpO2": 4
+        },
+        "delta_symptoms": {
+          "consciousness": -1
+        }
+      }
+    },
+    {
+      "id": "nebulized_epinephrine",
+      "label": "雾化肾上腺素",
+      "category": "conditional_special",
+      "score": {
+        "points": 0,
+        "penalty_if_before": "epi_im_given",
+        "penalty_points": 1,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "nebulized_epi": true,
+          "neb_epi_effect_ticks": 2
+        },
+        "delta_symptoms": {
+          "stridor": -1
+        },
+        "delta_vitals": {
+          "SpO2": 1
+        }
+      }
+    },
+    {
+      "id": "cpr",
+      "label": "CPR",
+      "category": "conditional_special",
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "cpr_done": true
+        }
+      }
+    },
+    {
+      "id": "continue_infusion",
+      "label": "继续输注可疑药物",
+      "category": "harmful_action",
+      "score": {
+        "points": 0,
+        "penalty_points_always": 3,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "stopped_infusion": false
+        },
+        "delta_vitals": {
+          "SpO2": -3,
+          "SBP": -10,
+          "DBP": -5,
+          "HR": 8,
+          "RR": 2
+        },
+        "delta_symptoms": {
+          "wheeze": 1,
+          "stridor": 1
+        }
+      }
+    },
+    {
+      "id": "remove_iv",
+      "label": "拔除静脉通路",
+      "category": "harmful_action",
+      "score": {
+        "points": 0,
+        "penalty_points_always": 2,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "iv_access": false
+        },
+        "delta_vitals": {
+          "HR": 4
+        }
+      }
+    },
+    {
+      "id": "sedation",
+      "label": "镇静药",
+      "category": "harmful_action",
+      "score": {
+        "points": 0,
+        "penalty_points_always": 2,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "delta_vitals": {
+          "RR": -2,
+          "SpO2": -2,
+          "SBP": -4
+        },
+        "delta_symptoms": {
+          "consciousness": 1
+        }
+      }
+    }
+  ],
+  "dynamics": {
+    "tick_seconds": 30,
+    "rules": [
+      {
+        "name": "bp_result_available",
+        "when": "flags.bp_ordered and (not flags.bp_checked) and t >= 30",
+        "effects": {
+          "set_flags": {
+            "bp_checked": true
+          }
+        }
+      },
+      {
+        "name": "ongoing_exposure_worsens_fast",
+        "when": "flags.infusion_running and t >= 30",
+        "effects": {
+          "set_flags": {
+            "shock_risk_increasing": true
+          },
+          "delta_symptoms": {
+            "rash": 1,
+            "wheeze": 1
+          },
+          "delta_vitals": {
+            "SpO2": -4,
+            "HR": 10,
+            "SBP": -10,
+            "DBP": -4,
+            "RR": 2
+          }
+        }
+      },
+      {
+        "name": "slow_mediator_cascade_before_epi_node",
+        "when": "flags.stopped_infusion and (not flags.epi_im_given) and (not flags.epinephrine_delay_after_core_steps) and t >= 30 and t <= 330 and (t % 60 == 0)",
+        "effects": {
+          "delta_symptoms": {
+            "wheeze": 1
+          },
+          "delta_vitals": {
+            "SpO2": -1,
+            "HR": 3,
+            "SBP": -2,
+            "DBP": -1,
+            "RR": 1
+          }
+        }
+      },
+      {
+        "name": "slow_airway_worsening_without_oxygen_before_epi_node",
+        "when": "(not flags.epi_im_given) and (not flags.epinephrine_delay_after_core_steps) and (not flags.oxygen_on) and t >= 60 and (t % 60 == 0)",
+        "effects": {
+          "delta_vitals": {
+            "SpO2": -1,
+            "RR": 1
+          }
+        }
+      },
+      {
+        "name": "severe_deterioration_after_epi_node_delay",
+        "when": "(not flags.resuscitation_rosc) and ((not flags.epi_im_given) and flags.epinephrine_delay_after_core_steps and t >= 30)",
+        "effects": {
+          "set_flags": {
+            "severe_deterioration_triggered": true,
+            "adrenaline_delay_event": true,
+            "shock_risk_increasing": true
+          },
+          "delta_vitals": {
+            "SpO2": -4,
+            "HR": 10,
+            "SBP": -10,
+            "DBP": -5,
+            "RR": 3
+          },
+          "delta_symptoms": {
+            "wheeze": 1,
+            "consciousness": 1
+          }
+        }
+      },
+      {
+        "name": "airway_compromise_after_epi_delay",
+        "when": "(not flags.resuscitation_rosc) and ((not flags.epi_im_given) and flags.epinephrine_delay_after_core_steps and (vitals.SpO2 < 92 or symptoms.wheeze >= 2 or symptoms.consciousness >= 1))",
+        "effects": {
+          "set_flags": {
+            "airway_compromise": true,
+            "airway_risk_increasing": true
+          },
+          "delta_symptoms": {
+            "stridor": 1,
+            "angioedema": 1
+          },
+          "delta_vitals": {
+            "SpO2": -3,
+            "RR": 2,
+            "HR": 4,
+            "SBP": -4
+          }
+        }
+      },
+      {
+        "name": "airway_obstruction_triggered",
+        "when": "(not flags.resuscitation_rosc) and (flags.airway_compromise and (symptoms.stridor >= 2 or vitals.SpO2 < 88 or symptoms.consciousness >= 2))",
+        "effects": {
+          "set_flags": {
+            "airway_obstruction_triggered": true,
+            "advanced_support_indicated": true
+          }
+        }
+      },
+      {
+        "name": "bvm_required_if_ventilation_failing",
+        "when": "(not flags.resuscitation_rosc) and (flags.airway_obstruction_triggered and (vitals.SpO2 < 88 or symptoms.consciousness >= 2 or vitals.RR < 10))",
+        "effects": {
+          "set_flags": {
+            "bvm_required": true,
+            "advanced_support_indicated": true
+          }
+        }
+      },
+      {
+        "name": "oxygen_support_improves_spo2",
+        "when": "flags.oxygen_on and (not flags.airway_obstruction_triggered) and vitals.SpO2 < 99",
+        "effects": {
+          "delta_vitals": {
+            "SpO2": 2
+          }
+        }
+      },
+      {
+        "name": "oxygen_limited_by_airway_obstruction",
+        "when": "(not flags.resuscitation_rosc) and (flags.oxygen_on and flags.airway_obstruction_triggered and vitals.SpO2 < 94)",
+        "effects": {
+          "delta_vitals": {
+            "SpO2": -1
+          }
+        }
+      },
+      {
+        "name": "epi_primary_effect_ticks",
+        "when": "flags.epi_effect_ticks > 0",
+        "effects": {
+          "delta_vitals": {
+            "SBP": 7,
+            "DBP": 4,
+            "SpO2": 4,
+            "HR": -8,
+            "RR": -4
+          },
+          "delta_symptoms": {
+            "wheeze": -1,
+            "stridor": -1,
+            "rash": -1,
+            "angioedema": -1,
+            "consciousness": -1
+          },
+          "counter_inc": {
+            "epi_effect_ticks": -1
+          }
+        }
+      },
+      {
+        "name": "fluid_support_ticks",
+        "when": "flags.fluid_effect_ticks > 0",
+        "effects": {
+          "delta_vitals": {
+            "SBP": 5,
+            "DBP": 3,
+            "HR": -2
+          },
+          "counter_inc": {
+            "fluid_effect_ticks": -1
+          }
+        }
+      },
+      {
+        "name": "bvm_effect_ticks",
+        "when": "flags.bvm_effect_ticks > 0",
+        "effects": {
+          "delta_vitals": {
+            "SpO2": 5,
+            "RR": -1
+          },
+          "delta_symptoms": {
+            "consciousness": -1
+          },
+          "counter_inc": {
+            "bvm_effect_ticks": -1
+          }
+        }
+      },
+      {
+        "name": "nebulized_epi_effect_ticks",
+        "when": "flags.neb_epi_effect_ticks > 0",
+        "effects": {
+          "delta_symptoms": {
+            "stridor": -1
+          },
+          "delta_vitals": {
+            "SpO2": 1
+          },
+          "counter_inc": {
+            "neb_epi_effect_ticks": -1
+          }
+        }
+      },
+      {
+        "name": "bronchodilator_effect_ticks",
+        "when": "flags.bronchodilator_effect_ticks > 0",
+        "effects": {
+          "delta_symptoms": {
+            "wheeze": -1
+          },
+          "delta_vitals": {
+            "SpO2": 1
+          },
+          "counter_inc": {
+            "bronchodilator_effect_ticks": -1
+          }
+        }
+      },
+      {
+        "name": "steroid_effect_record_ticks",
+        "when": "flags.steroid_valid and flags.steroid_effect_ticks > 0",
+        "effects": {
+          "counter_inc": {
+            "steroid_effect_ticks": -1
+          }
+        }
+      },
+      {
+        "name": "asphyxia_death_after_prolonged_unresolved_delay",
+        "when": "(not flags.resuscitation_rosc) and (flags.epinephrine_delay_after_core_steps and (not flags.epi_im_given) and t >= 480 and (vitals.SpO2 < 78 or vitals.SBP < age_sbp_threshold or symptoms.consciousness >= 3))",
+        "effects": {
+          "set_flags": {
+            "dead": true
+          },
+          "set_grade": 4,
+          "set_vitals": {
+            "SpO2": 50,
+            "HR": 40,
+            "RR": 6,
+            "SBP": 40,
+            "DBP": 20
+          },
+          "delta_symptoms": {
+            "consciousness": 2
+          }
+        }
+      },
+      {
+        "name": "stabilization_after_control",
+        "when": "flags.epi_im_given and flags.oxygen_on and flags.stopped_infusion and t >= 180 and (vitals.SpO2 < 99 or vitals.SBP < 95 or symptoms.rash >= 1 or symptoms.wheeze >= 1 or symptoms.stridor >= 1)",
+        "effects": {
+          "delta_vitals": {
+            "SpO2": 2,
+            "SBP": 2,
+            "DBP": 1,
+            "HR": -3,
+            "RR": -2
+          },
+          "delta_symptoms": {
+            "rash": -1,
+            "wheeze": -1,
+            "stridor": -1,
+            "consciousness": -1
+          }
+        }
+      },
+      {
+        "name": "fluid_requires_iv",
+        "when": "(not flags.iv_access) and flags.fluid_bolus_given and t >= 30",
+        "effects": {
+          "set_flags": {
+            "fluid_bolus_valid": false
+          },
+          "delta_vitals": {
+            "SBP": -6,
+            "DBP": -3,
+            "HR": 4
+          }
+        }
+      }
+    ]
+  },
+  "end_conditions": {
+    "success_when": "not flags.dead and flags.epi_im_given and flags.stopped_infusion and flags.oxygen_on and flags.help_called and flags.monitor_on and flags.bp_checked and flags.fluid_bolus_valid and flags.first_reassessment_done and flags.bronchodilator_neb and flags.steroid_valid and flags.second_reassessment_done and flags.family_communication and flags.sbar_handoff and grade <= 2 and vitals.SpO2 >= 95 and vitals.SBP >= age_sbp_threshold",
+    "failure_when": "(flags.dead) or flags.epi_overdose_event",
+    "max_time_seconds": 840
+  },
+  "reporting": {
+    "observe_recommendation": {
+      "resp_distress_hours": "至少6–8小时",
+      "circulatory_instability_hours": "至少12–24小时"
+    }
+  },
+  "training": {
+    "min_time_seconds_for_success": 0,
+    "min_reassess_count_recommended": 2,
+    "guided_prompts": [
+      {
+        "text": "步骤1：停用可疑药物并保留静脉通路。",
+        "reason": "本病例发生在静脉输注过程中，应立即停止可疑药物/输液，但不要拔除静脉通路。",
+        "done_when": "flags.stopped_infusion and flags.iv_access"
+      },
+      {
+        "text": "步骤2：呼救。",
+        "reason": "严重过敏反应进展快，需要医生、抢救车及团队协作同步到位。",
+        "done_when": "flags.help_called"
+      },
+      {
+        "text": "步骤3：ABC评估。",
+        "reason": "快速判断气道、呼吸、循环和意识状态。",
+        "done_when": "'abc_assess' in action_first_time"
+      },
+      {
+        "text": "步骤4：开放气道并给氧。",
+        "reason": "早期开放气道、给氧并持续评估通气与氧合。",
+        "done_when": "flags.oxygen_on"
+      },
+      {
+        "text": "步骤5：体位管理。",
+        "reason": "平卧、抬高下肢；呕吐或意识障碍时注意头偏向一侧。",
+        "done_when": "flags.positioned"
+      },
+      {
+        "text": "步骤6：连接监护。",
+        "reason": "连接SpO₂、心率、呼吸频率等监测。",
+        "done_when": "flags.monitor_on"
+      },
+      {
+        "text": "步骤7：测血压。",
+        "reason": "血压和末梢灌注是判断循环受累、补液和复评的重要依据。",
+        "done_when": "flags.bp_checked"
+      },
+      {
+        "text": "步骤8：肌注肾上腺素。",
+        "reason": "肌注肾上腺素是一线关键处置。儿童按0.01 mg/kg，单次最大0.3 mg。",
+        "done_when": "flags.epi_im_given"
+      },
+      {
+        "text": "步骤9：快速扩容并输入容量。",
+        "reason": "循环不稳定时按10–20 ml/kg进行晶体液快速扩容，单次最大500 ml。",
+        "done_when": "flags.fluid_bolus_valid"
+      },
+      {
+        "text": "步骤10：第一次复评。",
+        "reason": "完成肌注肾上腺素和快速扩容后，复评生命体征、呼吸、循环、意识和皮肤黏膜表现。",
+        "done_when": "flags.first_reassessment_done"
+      },
+      {
+        "text": "步骤11：若仍有咳嗽/喘息，给予雾化支扩。",
+        "reason": "仍有咳嗽/喘息或支气管痉挛表现时，可给予雾化支气管扩张剂。",
+        "done_when": "flags.bronchodilator_neb"
+      },
+      {
+        "text": "步骤12：快速扩容后给予糖皮质激素并输入剂量。",
+        "reason": "糖皮质激素为辅助治疗，必须在一线处置和快速扩容后使用，并按体重输入剂量。",
+        "done_when": "flags.steroid_valid"
+      },
+      {
+        "text": "步骤13：第二次复评。",
+        "reason": "告知家属前再次评估病情，避免在未掌握最新状态时沟通或交接。",
+        "done_when": "flags.second_reassessment_done"
+      },
+      {
+        "text": "步骤14：告知家属。",
+        "reason": "简明说明当前病情、已采取措施、仍需观察的风险和下一步安排。",
+        "done_when": "flags.family_communication"
+      },
+      {
+        "text": "步骤15：SBAR交接。",
+        "reason": "交代诱因、时间轴、关键用药、补液容量、复评结果和后续观察重点。",
+        "done_when": "flags.sbar_handoff"
+      }
+    ]
+  },
+  "scoring_notes": {
+    "profile": "V1.2.6_25_point_steroid_scored_delayed_deterioration",
+    "total_score": 25,
+    "principle": "25分标准路径稳定用于主要结局；气道梗阻、球囊加压给氧、再次肾上腺素、高级生命支持和CPR作为条件性分支单独记录，不混入主分。",
+    "steroid_rule": "糖皮质激素纳入5分；需在有效肌注肾上腺素和快速扩容后使用，并输入符合体重范围的剂量。当前默认甲泼尼龙1–2 mg/kg，单次最大40 mg。",
+    "deterioration_rule": "在前7项基础抢救动作完成前，未肌注肾上腺素导致的生命体征演化较缓；若达到第8关键节点或已完成多数基础步骤仍未肌注肾上腺素，启动明显生命体征波动与气道/休克风险分支。"
+  },
+  "version_notes": {
+    "V1.2.6": "糖皮质激素计分版：总分25分；删除抗组胺药；新增糖皮质激素剂量输入；未及时肌注肾上腺素改为第8关键节点后加速恶化；新增气道梗阻/球囊加压给氧条件性分支。",
+    "V1.2.6b": "去除考试模式CPR/高级支持提示性文字；CPR+球囊面罩加压给氧+联系高级生命支持后，作为危重抢救后转入PICU终点。"
+  }
+}
