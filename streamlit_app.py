@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.4 infusion double-reassessment
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.5 IV dual-reassessment candidate
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -8,7 +8,7 @@
 - 右侧操作按钮统一使用简洁短标题，不再显示冗余解释；
 - 当生命体征、临床表现或分级发生变化时，相关卡片自动闪动提示；
 - 训练模式保留步骤提示与原因说明；考试模式仅保留干净操作界面；
-- 肌注肾上腺素需输入剂量，系统按体重核对 0.01 mg/kg 与 0.3 mg 儿童上限。
+- 肌注肾上腺素需输入剂量，系统按体重核对 0.01 mg/kg 与 0.5 mg 上限。
 - 每次开始/重置模拟时自动随机生成年龄与体重：年龄 2-11 岁，体重 10-35 kg。
 - 按用户确认的14项评分细则校准最佳时间窗：总分20分。
 - V1.0新增：访问码、单位/科室/参与者编号、自动保存结果、管理员导出CSV、操作历史即时显示。
@@ -17,9 +17,7 @@
 - V1.1.2新增：多中心/多层级课题字段，登录登记界面居中加宽，版本说明收纳到右上角。
 - V1.1.3新增：登记界面按院区/科室标准化下拉录入，按院区代码+科室代码+姓名首字母自动生成参与者编号；删除前台项目编号和第几次测试字段；评估阶段标准化为基线评估、模拟培训、培训后考核。
 - V1.1.4新增：按评估阶段自动锁定流程；基线评估=考试模式+初始病例，模拟培训=训练模式+初始病例，培训后考核=考试模式+变体病例Variant A；受试者不再自行选择运行模式和病例脚本。
-- V1.2.0新增：合并数据质量增强、管理员质控概览与研究分析字段；新增阶段完成状态、重复作答识别、阶段顺序核查、数据有效性标记和能力维度指标导出。
-- V1.2.1新增：对齐2025年严重过敏反应共识，加入病情进展分级展示、步骤规划限制、儿童肾上腺素0.01 mg/kg且最大0.3 mg规则、复评后重复给药与升级处理节点。
-- V1.2.3新增：前台隐藏判断提示和病情进展分级；保留动态临床表现；全部操作可选；训练模式保留内部标准流程提示；操作按钮简洁化。
+- V1.2.5新增：输液场景双复评逻辑、儿童肾上腺素0.3 mg上限、快速补液容量输入、再次肌注/高级支持/CPR/雾化肾上腺素条件性路径。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -50,7 +48,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.4 infusion-double-reassessment"
+APP_VERSION = "V1.2.5 IV-dual-reassessment-candidate"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -67,8 +65,8 @@ DEPARTMENT_CODES = {
     "血液科": "XYK",
     "心血管科": "XXGK",
     "神经科": "SJK",
-    "消化科": "XHK",
     "PICU": "PICU",
+    "消化科": "XHK",
 }
 
 ASSESSMENT_PHASE_OPTIONS = ["基线评估", "模拟培训", "培训后考核"]
@@ -96,14 +94,6 @@ WORKFLOW_RULES = {
         "task": "请按考试要求独立完成变体病例处置。系统不会提供步骤原因提示。",
     },
 }
-
-PHASE_ORDER = {"基线评估": 1, "模拟培训": 2, "培训后考核": 3}
-PHASE_REQUIRED_PREVIOUS = {
-    "基线评估": [],
-    "模拟培训": ["基线评估"],
-    "培训后考核": ["基线评估", "模拟培训"],
-}
-PRIMARY_ANALYSIS_PHASES = ["基线评估", "模拟培训", "培训后考核"]
 
 
 def workflow_for_phase(phase: str) -> Dict[str, str]:
@@ -197,7 +187,7 @@ def randomize_patient_profile(scenario: Dict[str, Any]) -> Dict[str, Any]:
     patient["age_years"] = rng.randint(2, 11)
     patient["weight_kg"] = rng.randint(10, 35)
     patient["randomized_profile"] = True
-    patient["randomization_rule"] = "age_years: 2-11; weight_kg: 10-35; epinephrine cap: 0.3 mg"
+    patient["randomization_rule"] = "age_years: 2-11; weight_kg: 10-35"
     return randomized
 
 
@@ -250,12 +240,12 @@ def init_session() -> None:
         "last_ui_snapshot": None,
         "pending_dose_action_id": "",
         "pending_dose_action_label": "",
+        "pending_volume_action_id": "",
+        "pending_volume_action_label": "",
         "last_dose_feedback": "",
         "last_dose_feedback_level": "",
         "result_saved": False,
         "admin_export_view": "训练汇总",
-        "stage_progress_cache": {},
-        "stage_sequence_warning": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -285,45 +275,34 @@ def visible_vitals(sim: Simulator) -> Dict[str, str]:
 
 
 def symptoms_text(sim: Simulator) -> str:
-    """Dynamic clinical presentation narrative.
-
-    V1.2.2 no longer shows only several fixed symptom tags. It reads the
-    engine-generated system-based manifestation summary so that the current
-    symptom card changes with disease progression, monitoring availability and
-    treatment response.
-    """
-    try:
-        item = sim.get_current_manifestation_item()
-        summary = str(item.get("summary", ""))
-        return summary or "请结合当前症状和生命体征变化进行处置。"
-    except Exception:
-        s = sim.state.symptoms
-        parts = []
-        if s.get("rash", 0) >= 1:
-            parts.append("皮肤瘙痒/潮红/风团样皮疹")
-        if s.get("cough", 0) >= 1:
-            parts.append("咳嗽")
-        if s.get("wheeze", 0) >= 1:
-            parts.append("喘息")
-        if s.get("stridor", 0) >= 1:
-            parts.append("喉鸣")
-        if s.get("poor_perfusion", 0) >= 1:
-            parts.append("末梢灌注差")
-        return "、".join(parts) if parts else "无明显主观异常"
-
-def progression_text(sim: Simulator) -> str:
-    try:
-        item = sim.get_progression_item()
-        stage = str(item.get("stage", ""))
-        manifestations = str(item.get("manifestations", ""))
-        return f"{stage}｜{manifestations}" if manifestations else stage
-    except Exception:
-        return "请结合当前症状和生命体征复评。"
+    s = sim.state.symptoms
+    f = sim.state.flags
+    parts = []
+    if s.get("rash", 0) >= 1:
+        parts.append("皮疹/风团")
+    if s.get("angioedema", 0) >= 1:
+        parts.append("血管性水肿")
+    if s.get("wheeze", 0) >= 1:
+        parts.append("喘息/喘鸣")
+    if s.get("stridor", 0) >= 1:
+        parts.append("喉鸣/声音改变")
+    if s.get("gi", 0) >= 1:
+        parts.append("胃肠道症状")
+    if s.get("consciousness", 0) >= 1:
+        labels = ["烦躁", "嗜睡", "反应差"]
+        parts.append(labels[min(2, int(s.get("consciousness", 1)) - 1)])
+    if parts:
+        return "、".join(parts)
+    if f.get("epi_im_given") and f.get("fluid_bolus_valid") and not f.get("bronchodilator_neb"):
+        return "循环较前改善，皮疹减轻，但仍有咳嗽/轻微喘息，需继续观察呼吸道表现。"
+    if f.get("bronchodilator_neb") and f.get("second_reassessment_done"):
+        return "生命体征趋于稳定，咳嗽/喘息较前减轻，仍需继续严密观察。"
+    return "症状较前缓解，仍需继续观察生命体征、呼吸、循环和二相反应风险"
 
 
 def grade_badge(sim: Simulator) -> str:
-    name = {1: "I", 2: "II", 3: "III", 4: "IV"}.get(sim.state.grade, str(sim.state.grade))
-    return f"分级 {name}"
+    # Grade is retained in backend reports, but not exposed as a diagnostic hint in the participant UI.
+    return "动态观察"
 
 
 def get_report_download(report: Dict[str, Any]) -> bytes:
@@ -403,7 +382,7 @@ def enrich_report(report: Dict[str, Any], end_reason: str = "") -> Dict[str, Any
     enriched = json.loads(json.dumps(report, ensure_ascii=False))
     enriched["session"] = build_session_metadata(end_reason=end_reason)
     enriched["end_reason"] = end_reason
-    return attach_research_quality(enriched)
+    return enriched
 
 
 def flatten_record(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -417,8 +396,6 @@ def flatten_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "session_id": session.get("session_id", ""),
         "participant_id": session.get("participant_id", ""),
         **research_metadata_from_session(session),
-        **data_quality_from_report(report),
-        **research_indicators_from_report(report),
         "mode": report.get("mode", ""),
         "scenario_script_name": report.get("scenario_script_name", ""),
         "scenario_title": report.get("scenario_title", ""),
@@ -495,10 +472,8 @@ def supabase_table_name() -> str:
 def infer_epi_dose_status(report: Dict[str, Any]) -> str:
     issues = "；".join(map(str, report.get("process_safety_issues", []) or []))
     logs = report.get("log", []) or []
-    if "超过0.3" in issues or "严重用药安全事件" in issues or "心动过速致心衰" in issues:
+    if "超过儿童单次最大0.3" in issues or "超过0.3" in issues or "心动过速致心衰" in issues:
         return "overdose"
-    if "剂量高于" in issues or "剂量不准确" in issues:
-        return "excess"
     if "剂量不足" in issues or "操作无效" in issues:
         return "underdose"
     for item in logs:
@@ -507,10 +482,10 @@ def infer_epi_dose_status(report: Dict[str, Any]) -> str:
         message = item.get("message", "")
         if message == "im_epinephrine_overdose":
             return "overdose"
+        if message == "im_epinephrine_dose_high":
+            return "dose_high"
         if message == "im_epinephrine_underdose":
             return "underdose"
-        if message == "im_epinephrine_excess_dose":
-            return "excess"
         if message == "im_epinephrine_dose_verified":
             return "valid"
     timeline = report.get("key_timeline", {}) or {}
@@ -550,7 +525,7 @@ def make_database_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "full_report": report,
         "app_version": session.get("app_version", APP_VERSION),
         "session_id": session.get("session_id", ""),
-        "client_note": "saved_from_streamlit_v1_2_0_research_quality",
+        "client_note": "saved_from_streamlit_v1_2_5_iv_dual_reassessment",
     }
 
 
@@ -712,34 +687,45 @@ ACTION_LABELS_CN = {
     "check_bp": "测血压",
     "im_epinephrine": "肌注肾上腺素",
     "fluid_bolus": "快速补液",
-    "bronchodilator": "雾化支扩",
-    "nebulized_epinephrine": "雾化肾上腺素",
-    "antihistamine_iv": "抗组胺药",
-    "steroid": "糖皮质激素",
+    "fluid_bolus_volume_verified": "快速补液容量确认",
+    "fluid_bolus_under": "补液量不足",
+    "fluid_bolus_over": "补液量过量",
+    "fluid_bolus_invalid_no_iv": "补液无有效通路",
     "reassess_first": "第一次复评",
+    "bronchodilator": "雾化支扩",
     "reassess_second": "第二次复评",
-    "repeat_im_epinephrine": "再次肌注肾上腺素",
-    "call_icu_team": "联系高级支持",
     "family_explain": "告知家属",
     "sbar_handoff": "SBAR交接",
-    "continue_infusion": "继续可疑药物",
+    "repeat_epinephrine": "再次肌注肾上腺素",
+    "repeat_epinephrine_valid": "再次肌注肾上腺素",
+    "repeat_epinephrine_not_indicated": "非必要再次肌注",
+    "repeat_epinephrine_premature": "再次肌注时机过早",
+    "advanced_support": "联系高级支持",
+    "nebulized_epinephrine": "雾化肾上腺素",
+    "cpr": "CPR",
+    "antihistamine_iv": "抗组胺药",
+    "steroid": "糖皮质激素",
+    "continue_infusion": "继续输注可疑药物",
     "remove_iv": "拔除静脉通路",
-    "sedation": "给予镇静药",
-    "im_epinephrine_dose_verified": "剂量确认",
-    "im_epinephrine_underdose": "剂量不足",
-    "im_epinephrine_overdose": "超过儿童上限",
-    "im_epinephrine_excess_dose": "高于目标剂量",
+    "sedation": "镇静药",
+    "im_epinephrine_dose_verified": "肌注肾上腺素剂量确认",
+    "im_epinephrine_underdose": "肌注肾上腺素剂量不足",
+    "im_epinephrine_dose_high": "肌注肾上腺素剂量偏高",
+    "im_epinephrine_overdose": "肌注肾上腺素过量",
 }
 
 KEY_ACTION_COLUMNS = [
     ("stop_infusion_time", "stop_infusion"),
     ("call_help_time", "call_help"),
+    ("abc_assess_time", "abc_assess"),
     ("oxygen_time", "oxygen"),
+    ("position_time", "position"),
     ("monitor_time", "monitor"),
     ("bp_check_time", "bp_check"),
     ("epi_time", "epi_im"),
     ("fluid_time", "fluid"),
     ("first_reassessment_time", "first_reassessment"),
+    ("bronchodilator_time", "bronchodilator"),
     ("second_reassessment_time", "second_reassessment"),
     ("family_communication_time", "family_communication"),
     ("sbar_time", "sbar_handoff"),
@@ -778,338 +764,6 @@ def _safe_number(value: Any, default: float = 0.0) -> float:
 
 def _yes_no(value: bool) -> str:
     return "是" if bool(value) else "否"
-
-
-def _present(value: Any) -> bool:
-    return value not in (None, "", [], {})
-
-
-def _phase_value(obj: Dict[str, Any]) -> str:
-    session = obj.get("session", {}) if isinstance(obj.get("session", {}), dict) else {}
-    return str(obj.get("assessment_phase") or session.get("assessment_phase") or "")
-
-
-def _participant_value(obj: Dict[str, Any]) -> str:
-    session = obj.get("session", {}) if isinstance(obj.get("session", {}), dict) else {}
-    return str(obj.get("participant_id") or session.get("participant_id") or "")
-
-
-def _created_value(obj: Dict[str, Any]) -> str:
-    session = obj.get("session", {}) if isinstance(obj.get("session", {}), dict) else {}
-    return str(obj.get("created_at") or session.get("created_at") or "")
-
-
-def _time_or_blank(value: Any) -> Any:
-    return value if value not in (None, "") else ""
-
-
-def _first_available_time(*values: Any) -> Any:
-    candidates = []
-    for value in values:
-        if value in (None, ""):
-            continue
-        try:
-            candidates.append(float(value))
-        except Exception:
-            continue
-    if not candidates:
-        return ""
-    v = min(candidates)
-    return int(v) if float(v).is_integer() else round(v, 2)
-
-
-def research_indicators_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Simulation-derived analysis fields for SPSS/R exports.
-
-    These fields intentionally live in full_report JSON and exported CSV, rather
-    than requiring new Supabase table columns.
-    """
-    timeline = report.get("key_timeline", {}) or {}
-    issues = _issue_text(report)
-    epi_time = timeline.get("epi_im", _first_log_time(report, "im_epinephrine"))
-    abc_time = _first_log_time(report, "abc_assess")
-    position_time = _first_log_time(report, "shock_position")
-    neb_epi_time = _first_log_time(report, "nebulized_epinephrine")
-    bronchodilator_time = _first_log_time(report, "bronchodilator")
-    repeat_epi_time = _first_log_time(report, "repeat_im_epinephrine")
-    first_reassess_time = timeline.get("first_reassessment", _first_log_time(report, "reassess_first"))
-    second_reassess_time = timeline.get("second_reassessment", _first_log_time(report, "reassess_second"))
-    advanced_support_time = _first_log_time(report, "call_icu_team")
-    recognition_time = _first_available_time(timeline.get("stop_infusion"), timeline.get("call_help"), abc_time)
-    epi_status = infer_epi_dose_status(report)
-    reassess_count = int(_safe_number(timeline.get("reassess_count", 0), 0))
-    serious_error = (
-        epi_status == "overdose"
-        or "心动过速致心衰" in issues
-        or _action_attempt_count(report, "continue_infusion") > 0
-        or _action_attempt_count(report, "sedation") > 0
-        or _action_attempt_count(report, "remove_iv") > 0
-    )
-    key_flags = {
-        "stop_infusion_done": _present(timeline.get("stop_infusion")),
-        "call_help_done": _present(timeline.get("call_help")),
-        "oxygen_given": _present(timeline.get("oxygen")),
-        "monitoring_connected": _present(timeline.get("monitor")),
-        "bp_assessment_done": _present(timeline.get("bp_check")),
-        "epinephrine_given": _present(epi_time),
-        "fluid_resuscitation_given": _present(timeline.get("fluid")),
-        "abc_assessment_done": _present(abc_time),
-        "position_management_done": _present(position_time),
-        "family_communication_done": _present(timeline.get("family_communication")),
-        "sbar_handoff_done": _present(timeline.get("sbar_handoff")),
-        "reassessment_done": reassess_count > 0,
-    }
-    completed = sum(1 for v in key_flags.values() if bool(v))
-    total = len(key_flags)
-    return {
-        "recognition_time_sec": recognition_time,
-        "recognized_anaphylaxis": _yes_no(_present(recognition_time)),
-        "stop_infusion_done": _yes_no(key_flags["stop_infusion_done"]),
-        "call_help_done": _yes_no(key_flags["call_help_done"]),
-        "epinephrine_given": _yes_no(key_flags["epinephrine_given"]),
-        "epinephrine_time_sec": _time_or_blank(epi_time),
-        "epinephrine_dose_correct": _yes_no(epi_status == "valid"),
-        "oxygen_given": _yes_no(key_flags["oxygen_given"]),
-        "oxygen_time_sec": _time_or_blank(timeline.get("oxygen")),
-        "monitoring_connected": _yes_no(key_flags["monitoring_connected"]),
-        "monitoring_time_sec": _time_or_blank(timeline.get("monitor")),
-        "bp_assessment_done": _yes_no(key_flags["bp_assessment_done"]),
-        "bp_assessment_time_sec": _time_or_blank(timeline.get("bp_check")),
-        "fluid_resuscitation_given": _yes_no(key_flags["fluid_resuscitation_given"]),
-        "fluid_time_sec": _time_or_blank(timeline.get("fluid")),
-        "fluid_volume_ml": _time_or_blank(timeline.get("fluid_last_volume_ml")),
-        "fluid_target_min_ml": _time_or_blank(timeline.get("fluid_target_min_ml")),
-        "fluid_target_max_ml": _time_or_blank(timeline.get("fluid_target_max_ml")),
-        "fluid_volume_correct": _yes_no(bool(timeline.get("fluid_volume_valid", False))),
-        "epinephrine_under_dose": _yes_no(epi_status == "underdose"),
-        "epinephrine_excess_dose": _yes_no(epi_status == "excess"),
-        "epinephrine_over_dose": _yes_no(epi_status == "overdose"),
-        "serious_medication_error": _yes_no(serious_error),
-        "abc_assessment_done": _yes_no(key_flags["abc_assessment_done"]),
-        "abc_assessment_time_sec": _time_or_blank(abc_time),
-        "position_management_done": _yes_no(key_flags["position_management_done"]),
-        "position_time_sec": _time_or_blank(position_time),
-        "nebulized_epinephrine_time_sec": _time_or_blank(neb_epi_time),
-        "bronchodilator_time_sec": _time_or_blank(bronchodilator_time),
-        "repeat_epinephrine_time_sec": _time_or_blank(repeat_epi_time),
-        "advanced_support_time_sec": _time_or_blank(advanced_support_time),
-        "first_reassessment_time_sec": _time_or_blank(first_reassess_time),
-        "second_reassessment_time_sec": _time_or_blank(second_reassess_time),
-        "reassessment_done": _yes_no(key_flags["reassessment_done"]),
-        "reassessment_count_analysis": reassess_count,
-        "family_communication_done": _yes_no(key_flags["family_communication_done"]),
-        "sbar_handoff_done": _yes_no(key_flags["sbar_handoff_done"]),
-        "critical_step_completion_count": completed,
-        "critical_step_completion_rate": round(completed / total * 100, 1) if total else "",
-    }
-
-
-def data_quality_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
-    q = report.get("data_quality", {}) if isinstance(report.get("data_quality", {}), dict) else {}
-    return {
-        "record_validity": q.get("record_validity", "未核查"),
-        "validity_note": q.get("validity_note", ""),
-        "is_repeated_attempt": q.get("is_repeated_attempt", ""),
-        "attempt_order": q.get("attempt_order", ""),
-        "stage_sequence_status": q.get("stage_sequence_status", ""),
-        "previous_completed_stages": q.get("previous_completed_stages", ""),
-        "missing_required_previous_stage": q.get("missing_required_previous_stage", ""),
-    }
-
-
-def assess_summary_record_quality(record: Dict[str, Any], previous_records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    participant_id = _participant_value(record)
-    phase = _phase_value(record)
-    workflow_locked = record.get("workflow_locked", "")
-    previous_same = [r for r in previous_records if _participant_value(r) == participant_id and participant_id]
-    same_phase_previous = [r for r in previous_same if _phase_value(r) == phase and phase]
-    completed_stages = [_phase_value(r) for r in previous_same if _phase_value(r) in PRIMARY_ANALYSIS_PHASES]
-    completed_stage_set = set(completed_stages)
-    missing_required = [p for p in PHASE_REQUIRED_PREVIOUS.get(phase, []) if p not in completed_stage_set]
-
-    notes: List[str] = []
-    if not participant_id or participant_id == "anonymous":
-        notes.append("缺少有效参与者编号")
-    if phase not in PRIMARY_ANALYSIS_PHASES:
-        notes.append("缺少或无法识别评估阶段")
-    if workflow_locked not in (True, "True", "true", "是", "1", 1):
-        notes.append("流程锁定字段异常")
-    if same_phase_previous:
-        notes.append("同一参与者同一阶段存在重复记录")
-    if missing_required:
-        notes.append("缺少前序阶段：" + "、".join(missing_required))
-    if phase == "基线评估" and any(PHASE_ORDER.get(p, 0) > 1 for p in completed_stage_set):
-        notes.append("基线评估晚于后续阶段记录")
-
-    if missing_required:
-        sequence_status = "缺少前序阶段：" + "、".join(missing_required)
-    elif phase == "基线评估" and any(PHASE_ORDER.get(p, 0) > 1 for p in completed_stage_set):
-        sequence_status = "基线评估晚于后续阶段"
-    else:
-        sequence_status = "顺序合理"
-
-    return {
-        "record_validity": "有效" if not notes else "需核查",
-        "validity_note": "；".join(notes),
-        "is_repeated_attempt": _yes_no(bool(same_phase_previous)),
-        "attempt_order": len(same_phase_previous) + 1,
-        "stage_sequence_status": sequence_status,
-        "previous_completed_stages": "、".join(sorted(completed_stage_set, key=lambda x: PHASE_ORDER.get(x, 99))),
-        "missing_required_previous_stage": "、".join(missing_required),
-    }
-
-
-def add_quality_fields_to_summary_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    ordered = sorted(records, key=lambda r: _created_value(r))
-    previous_by_participant: Dict[str, List[Dict[str, Any]]] = {}
-    quality_by_session: Dict[str, Dict[str, Any]] = {}
-    for record in ordered:
-        pid = _participant_value(record)
-        previous = previous_by_participant.get(pid, [])
-        quality = assess_summary_record_quality(record, previous)
-        session_id = str(record.get("session_id", ""))
-        if session_id:
-            quality_by_session[session_id] = quality
-        previous_by_participant.setdefault(pid, []).append(record)
-
-    enriched: List[Dict[str, Any]] = []
-    for record in records:
-        merged = dict(record)
-        session_id = str(record.get("session_id", ""))
-        computed = quality_by_session.get(session_id, {})
-        if computed:
-            merged.update(computed)
-        enriched.append(merged)
-    return enriched
-
-
-def get_existing_quality_summaries_for_participant(participant_id: str) -> List[Dict[str, Any]]:
-    if not participant_id:
-        return []
-    try:
-        db_records, _ = load_result_records_database(limit=10000)
-        if db_records:
-            return [r for r in db_records if _participant_value(r) == participant_id]
-    except Exception:
-        pass
-    try:
-        local_reports = load_full_reports_local()
-        if local_reports:
-            records = build_summary_records_from_reports(local_reports, storage_source="local")
-            return [r for r in records if _participant_value(r) == participant_id]
-    except Exception:
-        pass
-    try:
-        local_summary = load_result_records_local()
-        return [r for r in local_summary if _participant_value(r) == participant_id]
-    except Exception:
-        return []
-
-
-def attach_research_quality(report: Dict[str, Any]) -> Dict[str, Any]:
-    report["research_indicators"] = research_indicators_from_report(report)
-    participant_id = _participant_value(report)
-    previous = get_existing_quality_summaries_for_participant(participant_id)
-    current_summary = report_to_summary_record_without_quality(report, storage_source="pending")
-    report["data_quality"] = assess_summary_record_quality(current_summary, previous)
-    return report
-
-
-def participant_progress_from_records(records: List[Dict[str, Any]], participant_id: str) -> Dict[str, Any]:
-    rows = [r for r in records if _participant_value(r) == participant_id]
-    stages = {phase: 0 for phase in PRIMARY_ANALYSIS_PHASES}
-    for row in rows:
-        phase = _phase_value(row)
-        if phase in stages:
-            stages[phase] += 1
-    complete_all = all(stages[p] > 0 for p in PRIMARY_ANALYSIS_PHASES)
-    repeated = {p: n for p, n in stages.items() if n > 1}
-    return {
-        "participant_id": participant_id,
-        "基线评估": stages["基线评估"],
-        "模拟培训": stages["模拟培训"],
-        "培训后考核": stages["培训后考核"],
-        "三阶段完整完成": _yes_no(complete_all),
-        "重复阶段": "；".join(f"{p}×{n}" for p, n in repeated.items()),
-    }
-
-
-def current_participant_progress(participant_id: str) -> Dict[str, Any]:
-    if not participant_id:
-        return {}
-    records = get_existing_quality_summaries_for_participant(participant_id)
-    return participant_progress_from_records(records, participant_id)
-
-
-def stage_warning_for_progress(phase: str, progress: Dict[str, Any]) -> str:
-    if not progress:
-        return ""
-    if phase == "模拟培训" and int(progress.get("基线评估", 0) or 0) == 0:
-        return "未检测到该参与者已完成基线评估。建议先完成基线评估，再进入模拟培训。"
-    if phase == "培训后考核":
-        missing = []
-        if int(progress.get("基线评估", 0) or 0) == 0:
-            missing.append("基线评估")
-        if int(progress.get("模拟培训", 0) or 0) == 0:
-            missing.append("模拟培训")
-        if missing:
-            return "未检测到该参与者已完成" + "、".join(missing) + "。建议按基线评估 → 模拟培训 → 培训后考核顺序完成。"
-    return ""
-
-
-def quality_overview_by_group(records: List[Dict[str, Any]], group_key: str) -> List[Dict[str, Any]]:
-    groups: Dict[str, List[Dict[str, Any]]] = {}
-    for r in records:
-        g = str(r.get(group_key, "") or "未填写")
-        groups.setdefault(g, []).append(r)
-    rows: List[Dict[str, Any]] = []
-    for group_name, rows_in_group in sorted(groups.items(), key=lambda x: x[0]):
-        participants = sorted({_participant_value(r) for r in rows_in_group if _participant_value(r)})
-        complete_count = 0
-        for pid in participants:
-            progress = participant_progress_from_records(rows_in_group, pid)
-            if progress.get("三阶段完整完成") == "是":
-                complete_count += 1
-        invalid_count = sum(1 for r in rows_in_group if str(r.get("record_validity", "")) == "需核查")
-        repeated_count = sum(1 for r in rows_in_group if str(r.get("is_repeated_attempt", "")) == "是")
-        rows.append({
-            "分组": group_name,
-            "已参与人数": len(participants),
-            "基线评估记录": sum(1 for r in rows_in_group if _phase_value(r) == "基线评估"),
-            "模拟培训记录": sum(1 for r in rows_in_group if _phase_value(r) == "模拟培训"),
-            "培训后考核记录": sum(1 for r in rows_in_group if _phase_value(r) == "培训后考核"),
-            "完成三阶段人数": complete_count,
-            "完整完成率%": round(complete_count / len(participants) * 100, 1) if participants else 0,
-            "需核查记录": invalid_count,
-            "重复阶段记录": repeated_count,
-        })
-    return rows
-
-
-def participant_quality_overview(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    participants = sorted({_participant_value(r) for r in records if _participant_value(r)})
-    rows: List[Dict[str, Any]] = []
-    for pid in participants:
-        pid_records = [r for r in records if _participant_value(r) == pid]
-        progress = participant_progress_from_records(pid_records, pid)
-        row0 = pid_records[0] if pid_records else {}
-        rows.append({
-            "参与者编号": pid,
-            "院区": row0.get("campus", ""),
-            "科室": row0.get("department", ""),
-            "护理层级": row0.get("nurse_level", ""),
-            "基线评估": progress.get("基线评估", 0),
-            "模拟培训": progress.get("模拟培训", 0),
-            "培训后考核": progress.get("培训后考核", 0),
-            "三阶段完整完成": progress.get("三阶段完整完成", "否"),
-            "重复阶段": progress.get("重复阶段", ""),
-            "需核查记录数": sum(1 for r in pid_records if str(r.get("record_validity", "")) == "需核查"),
-        })
-    return rows
-
-
-def report_to_summary_record_without_quality(report: Dict[str, Any], storage_source: str = "supabase") -> Dict[str, Any]:
-    return report_to_summary_record(report, storage_source=storage_source, include_quality=False)
 
 
 def _issue_text(report: Dict[str, Any]) -> str:
@@ -1163,7 +817,7 @@ def full_report_from_database_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return report
 
 
-def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supabase", include_quality: bool = True) -> Dict[str, Any]:
+def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supabase") -> Dict[str, Any]:
     session = report.get("session", {}) or {}
     patient = report.get("patient", {}) or {}
     timeline = report.get("key_timeline", {}) or {}
@@ -1175,16 +829,12 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
     max_score = _safe_number(report.get("max_score", 20), 20)
     epi_time = timeline.get("epi_im", _first_log_time(report, "im_epinephrine"))
     end_time = report.get("end_time_seconds", "")
-    quality_fields = data_quality_from_report(report) if include_quality else {}
-    research_fields = report.get("research_indicators") if isinstance(report.get("research_indicators"), dict) else research_indicators_from_report(report)
 
     record: Dict[str, Any] = {
         "created_at": session.get("created_at", ""),
         "session_id": session.get("session_id", ""),
         "participant_id": session.get("participant_id", ""),
         **research_metadata_from_session(session),
-        **quality_fields,
-        **research_fields,
         "mode": report.get("mode", ""),
         "scenario_script_name": report.get("scenario_script_name", ""),
         "scenario_title": report.get("scenario_title", ""),
@@ -1202,14 +852,21 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
         "reassess_count": timeline.get("reassess_count", ""),
         "action_count": sum(1 for e in _get_logs(report) if e.get("kind") == "action" and e.get("message") != "penalty"),
         "wrong_action_count": sum(1 for e in _get_logs(report) if e.get("kind") == "action" and e.get("message") == "penalty"),
-        "harmful_action_count": sum(_action_attempt_count(report, x) for x in ["continue_infusion", "sedation", "remove_iv", "im_epinephrine_overdose", "im_epinephrine_excess_dose"]),
+        "harmful_action_count": sum(_action_attempt_count(report, x) for x in ["continue_infusion", "sedation", "remove_iv", "im_epinephrine_overdose"]),
         "epi_target_dose_mg": timeline.get("epi_target_dose_mg", ""),
         "epi_input_dose_mg": timeline.get("epi_last_dose_mg", ""),
         "epi_dose_status": infer_epi_dose_status(report),
         "epi_delay_seconds": epi_time if epi_time is not None else "",
         "underdose_epi": _yes_no("剂量不足" in issues or _action_attempt_count(report, "im_epinephrine_underdose") > 0),
-        "excess_dose_epi": _yes_no("剂量高于" in issues or _action_attempt_count(report, "im_epinephrine_excess_dose") > 0),
-        "overdose_epi": _yes_no("超过0.3" in issues or "严重用药安全事件" in issues or _action_attempt_count(report, "im_epinephrine_overdose") > 0),
+        "dose_high_epi": _yes_no("剂量高于目标剂量" in issues or _action_attempt_count(report, "im_epinephrine_dose_high") > 0),
+        "overdose_epi": _yes_no("超过儿童单次最大0.3" in issues or _action_attempt_count(report, "im_epinephrine_overdose") > 0),
+        "fluid_bolus_volume_ml": timeline.get("fluid_bolus_volume_ml", ""),
+        "fluid_min_ml": timeline.get("fluid_min_ml", ""),
+        "fluid_max_ml": timeline.get("fluid_max_ml", ""),
+        "fluid_bolus_valid": _yes_no(bool(timeline.get("fluid_bolus_valid", False))),
+        "repeat_epinephrine_time": timeline.get("repeat_epinephrine", ""),
+        "advanced_support_time": timeline.get("advanced_support", ""),
+        "cpr_time": timeline.get("cpr", ""),
         "final_spo2": final_vitals.get("SpO2", ""),
         "final_hr": final_vitals.get("HR", ""),
         "final_rr": final_vitals.get("RR", ""),
@@ -1228,17 +885,14 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
         record[column_name] = timeline.get(timeline_key, "")
 
     # Extra action-time columns not present in key_timeline.
-    record["abc_assess_time"] = _first_log_time(report, "abc_assess")
-    record["position_time"] = _first_log_time(report, "shock_position")
-    record["nebulized_epinephrine_time"] = _first_log_time(report, "nebulized_epinephrine")
-    record["bronchodilator_time"] = _first_log_time(report, "bronchodilator")
-    reassess_times = [e.get("t") for e in _get_logs(report) if e.get("kind") == "action" and e.get("message") == "reassess"]
-    record["reassessment_first_time"] = reassess_times[0] if len(reassess_times) >= 1 else ""
-    record["reassessment_second_time"] = reassess_times[1] if len(reassess_times) >= 2 else ""
+    record["nebulized_epinephrine_time"] = timeline.get("nebulized_epinephrine", _first_log_time(report, "nebulized_epinephrine"))
+    record["reassessment_first_time"] = timeline.get("first_reassessment", _first_log_time(report, "reassess_first"))
+    record["reassessment_second_time"] = timeline.get("second_reassessment", _first_log_time(report, "reassess_second"))
 
     required_steps = [
-        "stop_infusion_time", "call_help_time", "oxygen_time", "monitor_time", "bp_check_time",
-        "epi_time", "fluid_time", "abc_assess_time", "position_time", "family_communication_time", "sbar_time"
+        "stop_infusion_time", "call_help_time", "abc_assess_time", "oxygen_time", "position_time",
+        "monitor_time", "bp_check_time", "epi_time", "fluid_time", "first_reassessment_time",
+        "bronchodilator_time", "second_reassessment_time", "family_communication_time", "sbar_time"
     ]
     record["completed_key_steps"] = sum(1 for k in required_steps if record.get(k) not in ("", None))
 
@@ -1266,7 +920,7 @@ def report_to_action_detail_records(report: Dict[str, Any], storage_source: str 
         if msg == "penalty":
             action_name = ACTION_LABELS_CN.get(action_id, action_id)
             event_type = "扣分"
-        elif msg in ["im_epinephrine_dose_verified", "im_epinephrine_underdose", "im_epinephrine_overdose"]:
+        elif msg in ["im_epinephrine_dose_verified", "im_epinephrine_underdose", "im_epinephrine_dose_high", "im_epinephrine_overdose", "fluid_bolus_volume_verified", "fluid_bolus_under", "fluid_bolus_over", "fluid_bolus_invalid_no_iv"]:
             action_name = ACTION_LABELS_CN.get(msg, msg)
             event_type = "剂量判定"
         else:
@@ -1277,7 +931,6 @@ def report_to_action_detail_records(report: Dict[str, Any], storage_source: str 
             "session_id": session.get("session_id", ""),
             "participant_id": session.get("participant_id", ""),
             **research_metadata_from_session(session),
-            **data_quality_from_report(report),
             "mode": report.get("mode", ""),
             "scenario_script_name": report.get("scenario_script_name", ""),
             "age_years": patient.get("age_years", ""),
@@ -1336,24 +989,17 @@ def get_action_history_rows(sim: Simulator) -> List[Dict[str, Any]]:
         elif msg == "im_epinephrine_underdose":
             display = "肌注肾上腺素剂量不足"
             result = f"无效：{data.get('dose_mg', '')} mg，目标 {data.get('target_dose_mg', '')} mg"
+        elif msg == "im_epinephrine_dose_high":
+            display = "肌注肾上腺素剂量偏高"
+            result = f"偏高：{data.get('dose_mg', '')} mg，目标 {data.get('target_dose_mg', '')} mg"
         elif msg == "im_epinephrine_overdose":
             display = "肌注肾上腺素过量"
             result = f"过量：{data.get('dose_mg', '')} mg"
-        elif msg == "fluid_bolus_volume_verified":
-            display = "快速补液量确认"
-            result = f"有效补液 {data.get('volume_ml', '')} ml"
-        elif msg == "fluid_bolus_under_volume":
-            display = "快速补液量不足"
-            result = f"{data.get('volume_ml', '')} ml，建议 {data.get('target_min_ml', '')}-{data.get('target_max_ml', '')} ml"
-        elif msg == "fluid_bolus_excess_volume":
-            display = "快速补液量过大"
-            result = f"{data.get('volume_ml', '')} ml，建议 {data.get('target_min_ml', '')}-{data.get('target_max_ml', '')} ml"
-        elif msg == "fluid_bolus_before_epinephrine":
-            display = "补液早于肾上腺素"
-            result = "补液不能替代一线治疗"
-        elif msg == "fluid_bolus_no_iv_access":
-            display = "无静脉通路补液"
-            result = "补液无效"
+        elif msg in ["fluid_bolus_volume_verified", "fluid_bolus_under", "fluid_bolus_over", "fluid_bolus_invalid_no_iv"]:
+            display = ACTION_LABELS_CN.get(msg, msg)
+            result = f"{data.get('result', '')}｜{data.get('volume_ml', '')} ml"
+        elif data.get("result"):
+            result = str(data.get("result", ""))
         elif data.get("gained") is not None:
             result = f"得分 +{data.get('gained')}"
         rows.append({"时间": f"{entry.t}s", "操作": str(display), "结果": str(result)})
@@ -1380,8 +1026,6 @@ def start_simulation(scenario_path: Path, mode: str, seed: int, participant_id: 
     st.session_state.last_ui_snapshot = None
     st.session_state.pending_dose_action_id = ""
     st.session_state.pending_dose_action_label = ""
-    st.session_state.pending_fluid_action_id = ""
-    st.session_state.pending_fluid_action_label = ""
     st.session_state.last_dose_feedback = ""
     st.session_state.last_dose_feedback_level = ""
     st.session_state.result_saved = False
@@ -1594,7 +1238,7 @@ def render_participant_entry_page() -> None:
                 st.rerun()
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.2.0 控制台")
+    st.sidebar.title("V1.2.5 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1642,19 +1286,6 @@ def render_sidebar() -> None:
         """,
         unsafe_allow_html=True,
     )
-
-    progress = current_participant_progress(st.session_state.get("participant_id", ""))
-    if progress:
-        st.sidebar.markdown(
-            f"**阶段完成状态**  \n"
-            f"基线评估：{int(progress.get('基线评估', 0) or 0)}次  \n"
-            f"模拟培训：{int(progress.get('模拟培训', 0) or 0)}次  \n"
-            f"培训后考核：{int(progress.get('培训后考核', 0) or 0)}次"
-        )
-        warn = stage_warning_for_progress(st.session_state.get("assessment_phase", ""), progress)
-        st.session_state.stage_sequence_warning = warn
-        if warn:
-            st.sidebar.warning(warn)
 
     scenario_path = scenario_path_by_role(workflow.get("script_role", "initial"))
     if scenario_path is None:
@@ -1807,7 +1438,6 @@ def inject_compact_css() -> None:
             margin-bottom: 0.24rem;
         }
         .clinical-card .value {
-            white-space: pre-line;
             color: #111827;
             font-weight: 820;
             font-size: 1.58rem;
@@ -2099,7 +1729,7 @@ def compact_header() -> None:
 def make_ui_snapshot(sim: Simulator) -> Dict[str, Any]:
     return {
         "time": sim.state.t,
-        "grade": grade_badge(sim),
+        "clinical": symptoms_text(sim),
         "score": f"{max(0, sim.score - sim.penalties)}/{sim.max_score}",
         "reassess": int(sim.state.flags.get("reassess_count", 0)),
         "symptoms": symptoms_text(sim),
@@ -2110,10 +1740,10 @@ def make_ui_snapshot(sim: Simulator) -> Dict[str, Any]:
 def detect_ui_changes(sim: Simulator) -> Dict[str, Any]:
     current = make_ui_snapshot(sim)
     previous = st.session_state.get("last_ui_snapshot")
-    changes: Dict[str, Any] = {"grade": False, "symptoms": False, "score": False, "reassess": False, "vitals": set()}
+    changes: Dict[str, Any] = {"clinical": False, "symptoms": False, "score": False, "reassess": False, "vitals": set()}
 
     if isinstance(previous, dict):
-        changes["grade"] = previous.get("grade") != current.get("grade")
+        changes["clinical"] = previous.get("clinical") != current.get("clinical")
         changes["symptoms"] = previous.get("symptoms") != current.get("symptoms")
         changes["score"] = previous.get("score") != current.get("score")
         changes["reassess"] = previous.get("reassess") != current.get("reassess")
@@ -2163,10 +1793,12 @@ def compact_action_label(label: str, max_chars: int = 24) -> str:
 
 def render_top_status(sim: Simulator, changes: Dict[str, Any]) -> None:
     score_text = f"{max(0, sim.score - sim.penalties)}/{sim.max_score}"
+    action_count = sum(1 for e in sim.log if e.kind == "action" and e.message != "penalty")
     items = [
         ("时间", f"{sim.state.t}s", False),
         ("得分", score_text, bool(changes.get("score"))),
-        ("复评", str(int(sim.state.flags.get("reassess_count", 0))), bool(changes.get("reassess"))),
+        ("有效复评", str(int(sim.state.flags.get("reassess_count", 0))), bool(changes.get("reassess"))),
+        ("操作数", str(action_count), False),
     ]
     html_items = []
     for label, value, changed in items:
@@ -2199,7 +1831,7 @@ def render_patient_status(sim: Simulator, scenario: Dict[str, Any], changes: Dic
     baseline = scenario.get("baseline", {}).get("time_zero_description", "")
     symptom_now = symptoms_text(sim)
     changed_vitals: Set[str] = changes.get("vitals", set()) or set()
-    any_clinical_change = bool(changes.get("symptoms")) or bool(changed_vitals)
+    any_clinical_change = bool(changes.get("symptoms")) or bool(changes.get("clinical")) or bool(changed_vitals)
 
     vital_cards = []
     for key, value in visible_vitals(sim).items():
@@ -2214,11 +1846,13 @@ def render_patient_status(sim: Simulator, scenario: Dict[str, Any], changes: Dic
     banner = ""
     if any_clinical_change:
         changed_names = []
+        if changes.get("clinical"):
+            changed_names.append("病情")
         if changes.get("symptoms"):
             changed_names.append("临床表现")
         if changed_vitals:
             changed_names.append("生命体征")
-        banner = f"<div class='change-banner flash'>⚠ {' / '.join(changed_names)} 已更新，请及时复评。</div>"
+        banner = f"<div class='change-banner flash'>⚠ {' / '.join(changed_names)} 已更新，请立即复评判断。</div>"
 
     st.markdown(
         f"""
@@ -2229,7 +1863,7 @@ def render_patient_status(sim: Simulator, scenario: Dict[str, Any], changes: Dic
             </div>
             <div class='baseline-box'>{html.escape(baseline)}</div>
             <div class='clinical-card{flash_class(bool(changes.get('symptoms')))}'>
-                <div class='label'>当前临床表现</div>
+                <div class='label'>当前症状</div>
                 <div class='value'>{html.escape(symptom_now)}</div>
             </div>
             <div class='vital-grid'>{''.join(vital_cards)}</div>
@@ -2242,7 +1876,7 @@ def render_patient_status(sim: Simulator, scenario: Dict[str, Any], changes: Dic
 
 def render_intro() -> None:
     compact_header()
-    st.success("受试者信息已登记。请在左侧选择运行模式和情景脚本，然后点击“开始/重置本次模拟”。")
+    st.success("受试者信息已登记。请在左侧查看本阶段任务，然后点击“开始/重置本阶段任务”。")
 
     left, right = st.columns([1.15, 1], gap="large")
     with left:
@@ -2264,9 +1898,9 @@ def render_intro() -> None:
     with right:
         st.container(border=True).markdown(
             """
-            **V1.1.3 登记优化版**
+            **V1.2.5 输液场景双复评定版候选**
 
-            本版用于支撑“多院区/多科室/多护理层级”的课题数据收集。系统按院区、科室和姓名首字母自动生成匿名参与者编号，并在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
+            本版在流程锁定基础上，加入输液场景双复评、快速补液容量输入、儿童肾上腺素0.3 mg上限及特殊路径条件性记录。系统按院区、科室和姓名首字母自动生成匿名参与者编号，并在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
 
             管理员后台仍支持三类导出：训练汇总CSV、操作明细CSV、完整JSONL。
             """
@@ -2333,7 +1967,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.2.0 研究质控与分析版")
+    st.markdown("### 管理员后台｜V1.2.5 研究质控与导出增强版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -2377,12 +2011,10 @@ def render_admin_page() -> None:
         raw_jsonl_records = local_summary_records
         storage_label = "local_summary_only"
 
-    summary_records = add_quality_fields_to_summary_records(summary_records)
-
     if local_summary_records and raw_db_rows:
         st.caption(f"本地备用摘要记录：{len(local_summary_records)} 条；当前后台优先显示云端数据库记录。")
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("训练记录数", len(summary_records))
     if summary_records:
         scores = []
@@ -2400,24 +2032,10 @@ def render_admin_page() -> None:
         c2.metric("平均得分", f"{sum(scores)/len(scores):.1f}" if scores else "-")
         c3.metric("Success次数", success_count)
         c4.metric("肾上腺素剂量错误", epi_invalid_count)
-        c5.metric("需核查记录", sum(1 for r in summary_records if str(r.get("record_validity", "")) == "需核查"))
     else:
         c2.metric("平均得分", "-")
         c3.metric("Success次数", "-")
         c4.metric("肾上腺素剂量错误", "-")
-        c5.metric("需核查记录", "-")
-
-    st.markdown("#### 数据质控概览")
-    if summary_records:
-        tab_campus, tab_dept, tab_participant = st.tabs(["按院区", "按科室", "按参与者"])
-        with tab_campus:
-            st.dataframe(quality_overview_by_group(summary_records, "campus"), use_container_width=True, hide_index=True)
-        with tab_dept:
-            st.dataframe(quality_overview_by_group(summary_records, "department"), use_container_width=True, hide_index=True)
-        with tab_participant:
-            st.dataframe(participant_quality_overview(summary_records), use_container_width=True, hide_index=True)
-    else:
-        st.info("暂无记录，产生训练记录后将自动显示各院区、各科室和参与者完成情况。")
 
     st.markdown("#### 数据导出")
     st.caption("汇总CSV适合Excel/SPSS/R做统计；操作明细CSV适合分析每一步操作路径；完整JSONL用于保留原始过程数据。")
@@ -2474,37 +2092,34 @@ def render_admin_page() -> None:
     with st.expander("字段说明", expanded=False):
         st.markdown(
             """
-            - **汇总 CSV**：每次训练一行，已将关键步骤时间点、肾上腺素剂量状态、错误操作次数、最终生命体征、数据有效性、阶段顺序和研究分析指标展开为单独字段。
-            - **操作明细 CSV**：每个操作事件一行，包含操作时间、操作名称、加分、扣分、剂量、结果、数据有效性等，适合分析操作顺序和延迟。
-            - **完整 JSONL**：一行是一份完整训练报告，保留嵌套结构；V1.2.0在其中保存 `research_indicators` 和 `data_quality`，适合长期归档和后续深度分析。
+            - **汇总 CSV**：每次训练一行，已将关键步骤时间点、肾上腺素剂量状态、错误操作次数、最终生命体征等展开为单独字段。
+            - **操作明细 CSV**：每个操作事件一行，包含操作时间、操作名称、加分、扣分、剂量、结果等，适合分析操作顺序和延迟。
+            - **完整 JSONL**：一行是一份完整训练报告，保留嵌套结构，适合长期归档和后续深度分析。
             """
         )
 
 
 def render_epinephrine_dose_panel(sim: Simulator) -> bool:
-    """Render dose-confirmation panel for IM epinephrine.
-
-    Returns True when an epinephrine dose is pending; the caller can keep
-    the operation area focused and avoid accidental double-click processing.
-    """
+    """Render dose-confirmation panel for IM epinephrine or repeat IM epinephrine."""
     pending_id = st.session_state.get("pending_dose_action_id", "")
-    if pending_id not in {"im_epinephrine", "repeat_im_epinephrine"}:
+    if pending_id not in ("im_epinephrine", "repeat_epinephrine"):
         return False
 
     weight = float(getattr(sim.state, "weight_kg", 0) or 0)
+    target_mg = round(min(0.01 * weight, 0.3), 3)
     max_single_mg = 0.3
-    target_mg = round(min(0.01 * weight, max_single_mg), 3)
+    title = "再次肌注肾上腺素：请输入本次总剂量" if pending_id == "repeat_epinephrine" else "肌注肾上腺素：请输入本次总剂量"
     st.markdown(
         "<div class='dose-card'>"
-        "<div class='title'>肌注肾上腺素：请输入本次总剂量</div>"
+        f"<div class='title'>{html.escape(title)}</div>"
         "<div class='text'>单位为 mg。确认后系统会按情景规则判断剂量是否有效。</div>"
         "</div>",
         unsafe_allow_html=True,
     )
     if sim.mode == "coach":
-        st.caption(f"训练提示：本例体重 {weight:g} kg；预设正确剂量为 0.01 mg/kg，即 {target_mg:g} mg；单次上限 {max_single_mg:g} mg。")
+        st.caption(f"训练提示：本例体重 {weight:g} kg；剂量为 0.01 mg/kg，即 {target_mg:g} mg；儿童单次最大 {max_single_mg:g} mg。")
 
-    dose_key = f"epi_dose_mg_{st.session_state.session_id}_{sim.state.t}"
+    dose_key = f"epi_dose_mg_{pending_id}_{st.session_state.session_id}_{sim.state.t}"
     dose_mg = st.number_input(
         "本次肌注总剂量（mg）",
         min_value=0.0,
@@ -2531,15 +2146,9 @@ def render_epinephrine_dose_panel(sim: Simulator) -> bool:
     return True
 
 
-
-
-
-def render_fluid_volume_panel(sim: Simulator) -> bool:
-    """Render crystalloid bolus volume-confirmation panel.
-
-    Returns True when fluid volume input is pending.
-    """
-    pending_id = st.session_state.get("pending_fluid_action_id", "")
+def render_fluid_bolus_panel(sim: Simulator) -> bool:
+    """Render volume-confirmation panel for crystalloid bolus."""
+    pending_id = st.session_state.get("pending_volume_action_id", "")
     if pending_id != "fluid_bolus":
         return False
 
@@ -2548,41 +2157,40 @@ def render_fluid_volume_panel(sim: Simulator) -> bool:
     max_ml = round(min(20 * weight, 500), 1)
     st.markdown(
         "<div class='dose-card'>"
-        "<div class='title'>快速补液：请输入本次晶体液补液量</div>"
-        "<div class='text'>单位为 ml。确认后系统会按体重判断补液量是否合理。</div>"
+        "<div class='title'>快速补液：请输入本次晶体液容量</div>"
+        "<div class='text'>单位为 ml。确认后系统会按体重判断容量是否合理。</div>"
         "</div>",
         unsafe_allow_html=True,
     )
     if sim.mode == "coach":
-        st.caption(f"训练提示：本例体重 {weight:g} kg；建议晶体液 10–20 ml/kg，即 {min_ml:g}–{max_ml:g} ml，单次最大 500 ml。")
+        st.caption(f"训练提示：本例体重 {weight:g} kg；合理范围 {min_ml:g}–{max_ml:g} ml（10–20 ml/kg，单次最大500 ml）。")
 
-    vol_key = f"fluid_volume_ml_{st.session_state.session_id}_{sim.state.t}"
-    default_ml = float(min(max_ml, max(min_ml, round(10 * weight))))
+    volume_key = f"fluid_volume_ml_{st.session_state.session_id}_{sim.state.t}"
     volume_ml = st.number_input(
-        "本次晶体液补液量（ml）",
+        "本次快速补液容量（ml）",
         min_value=0.0,
         max_value=2000.0,
-        value=default_ml,
+        value=0.0,
         step=10.0,
         format="%.0f",
-        key=vol_key,
+        key=volume_key,
     )
     c_ok, c_cancel = st.columns([1, 1], gap="medium")
-    if c_ok.button("确认补液量并执行", type="primary", use_container_width=True):
-        result = sim.apply_fluid_volume(float(volume_ml), action_id=pending_id)
+    if c_ok.button("确认容量并执行", type="primary", use_container_width=True):
+        result = sim.apply_fluid_bolus_volume(float(volume_ml))
         st.session_state.last_dose_feedback = str(result.get("message", ""))
         st.session_state.last_dose_feedback_level = str(result.get("status", ""))
-        st.session_state.pending_fluid_action_id = ""
-        st.session_state.pending_fluid_action_label = ""
-        if str(result.get("status", "")) == "valid":
-            sim.tick()
+        st.session_state.pending_volume_action_id = ""
+        st.session_state.pending_volume_action_label = ""
+        sim.tick()
         finalize_if_done()
         st.rerun()
     if c_cancel.button("取消输入", use_container_width=True):
-        st.session_state.pending_fluid_action_id = ""
-        st.session_state.pending_fluid_action_label = ""
+        st.session_state.pending_volume_action_id = ""
+        st.session_state.pending_volume_action_label = ""
         st.rerun()
     return True
+
 
 
 def render_simulation() -> None:
@@ -2627,7 +2235,7 @@ def render_simulation() -> None:
             st.markdown(
                 f"<div class='action-head'>"
                 f"<div class='action-title'>请选择下一步操作</div>"
-                f"<div class='action-note'>每次操作后自动推进 {sim.tick_seconds}s｜所有操作均可选择</div>"
+                f"<div class='action-note'>每次操作后自动推进 {sim.tick_seconds}s</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -2637,53 +2245,41 @@ def render_simulation() -> None:
                 msg = st.session_state.get("last_dose_feedback", "")
                 if level == "valid":
                     st.success(msg)
-                elif level == "overdose":
+                elif level in ["overdose", "invalid", "over"]:
                     st.error(msg)
-                elif level in {"underdose", "excess", "blocked"}:
+                elif level in ["underdose", "dose_high", "under", "not_indicated"]:
                     st.warning(msg)
                 else:
                     st.info(msg)
 
             dose_pending = render_epinephrine_dose_panel(sim)
-            fluid_pending = render_fluid_volume_panel(sim)
-
-            if sim.mode == "coach":
-                flow_warning = str(sim.state.flags.get("last_training_flow_warning", "") or "")
-                if flow_warning:
-                    st.info("训练模式标准流程提醒：" + flow_warning + " 该操作已记录，系统不会锁定按钮；请继续按2025共识流程完成后续处置。")
+            volume_pending = render_fluid_bolus_panel(sim)
 
             actions = sim.actions
             option_cols = 4
             for idx in range(0, len(actions), option_cols):
                 row = st.columns(option_cols, gap="medium")
                 for local_index, (col, action) in enumerate(zip(row, actions[idx: idx + option_cols])):
-                    aid = str(action.get("id", ""))
-                    full_label = str(action.get("label", aid))
-                    display_label = ACTION_LABELS_CN.get(aid, full_label)
-                    short_label = compact_action_label(display_label, max_chars=12)
+                    full_label = action.get("label", action.get("id", ""))
+                    short_label = compact_action_label(full_label, max_chars=18)
+                    aid = action.get("id")
                     button_text = f"{idx + local_index + 1}. {short_label}"
                     with col:
-                        flow_ok, flow_reason = sim.check_standard_flow(aid) if hasattr(sim, "check_standard_flow") else (True, "")
-                        disabled = bool(dose_pending or fluid_pending)
-                        help_text = ""
-                        if sim.mode == "coach" and (not flow_ok):
-                            help_text = "训练模式流程提醒：" + str(flow_reason)
                         if st.button(
                             button_text,
                             key=f"action_{aid}_{sim.state.t}_{idx}_{local_index}",
                             use_container_width=True,
-                            disabled=disabled,
-                            help=help_text,
+                            disabled=(dose_pending or volume_pending),
                         ):
                             st.session_state.last_dose_feedback = ""
                             st.session_state.last_dose_feedback_level = ""
-                            if aid in {"im_epinephrine", "repeat_im_epinephrine"}:
+                            if aid in ("im_epinephrine", "repeat_epinephrine"):
                                 st.session_state.pending_dose_action_id = aid
-                                st.session_state.pending_dose_action_label = display_label
+                                st.session_state.pending_dose_action_label = full_label
                                 st.rerun()
                             elif aid == "fluid_bolus":
-                                st.session_state.pending_fluid_action_id = aid
-                                st.session_state.pending_fluid_action_label = display_label
+                                st.session_state.pending_volume_action_id = aid
+                                st.session_state.pending_volume_action_label = full_label
                                 st.rerun()
                             else:
                                 sim.apply_action(aid)

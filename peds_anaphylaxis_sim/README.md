@@ -102,10 +102,3 @@ python engine.py --scenario scenarios/peds_ward_anaphylaxis_iv_v1_1_training.jso
 
 ## Hotfix 1.2.8.1
 - Added baseline flag `airway_compromise` to prevent rule_eval_error and enable oxygen limitation rule.
-
-
-## V1.2.4 输液场景双复评与补液剂量版
-
-- 当前临床表现根据病情进展动态生成，不再仅显示固定症状标签。
-- 操作按钮全部保持可选择。
-- 标准流程仅在训练模式中用于提示和偏离提醒，考试模式不显示流程提示。

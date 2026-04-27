@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (Training v1.2.4 infusion/double-reassessment)
+Pediatric Ward Anaphylaxis Simulator (V1.2.5 IV dual reassessment)
 
-特点（培训版）：
+特点（V1.2.5）：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
 - 操作菜单：仅显示“操作名称”，不提供引导性措辞
 - 自动评分：时间窗 + 过程扣分（仅用于培训）
@@ -152,11 +152,11 @@ class Simulator:
         s = self.state.symptoms
         flags = self.state.flags
 
-        if flags.get("cardiac_arrest", False) or flags.get("dead", False) or v.get("SpO2", 100) <= self.scenario["thresholds"]["SpO2_arrest"]:
+        if flags.get("cardiac_arrest", False) or v.get("SpO2", 100) <= self.scenario["thresholds"]["SpO2_arrest"]:
             return 4
 
         sbp_thr = self.age_sbp_threshold()
-        if v.get("SBP", 999) < sbp_thr or s.get("consciousness", 0) >= 2 or s.get("cyanosis", 0) >= 1 or s.get("poor_perfusion", 0) >= 2:
+        if v.get("SBP", 999) < sbp_thr or s.get("consciousness", 0) >= 2:
             return 3
         if (s.get("stridor", 0) >= 2 or s.get("wheeze", 0) >= 2) and v.get("SpO2", 100) < self.scenario["thresholds"]["SpO2_critical"]:
             return 3
@@ -167,7 +167,7 @@ class Simulator:
             return 2
         if v.get("SpO2", 100) < self.scenario["thresholds"]["SpO2_low"]:
             return 2
-        if s.get("wheeze", 0) >= 1 or s.get("stridor", 0) >= 1 or s.get("throat_tightness", 0) >= 1 or s.get("gi", 0) >= 2 or s.get("vomiting", 0) >= 1 or s.get("poor_perfusion", 0) >= 1:
+        if s.get("wheeze", 0) >= 1 or s.get("stridor", 0) >= 1 or s.get("gi", 0) >= 2:
             return 2
 
         return 1
@@ -226,153 +226,6 @@ class Simulator:
         self.state.grade = self.compute_grade()
 
 
-    def _eval_ctx(self) -> Dict[str, Any]:
-        return {
-            "t": self.state.t,
-            "vitals": SimpleNamespace(**self.state.vitals),
-            "symptoms": SimpleNamespace(**self.state.symptoms),
-            "flags": SimpleNamespace(**self.state.flags),
-            "age_sbp_threshold": self.age_sbp_threshold(),
-            "grade": self.state.grade,
-            "action_first_time": self.action_first_time,
-        }
-
-    def check_standard_flow(self, action_id: str) -> Tuple[bool, str]:
-        """Return whether an action matches the guideline-based standard flow.
-
-        V1.2.2 design principle:
-        - All operation buttons remain selectable in both coach and exam modes.
-        - These availability rules are no longer used to lock buttons.
-        - In coach mode only, the UI uses this result to display the internal
-          standard-flow reminder when a learner chooses or hovers over an
-          action outside the recommended sequence.
-        - Exam mode does not display these process hints.
-        """
-        action = next((a for a in self.actions if a.get("id") == action_id), None)
-        if not action:
-            return False, "未知操作。"
-        availability = action.get("availability", {}) or {}
-        when = str(availability.get("when", "") or "").strip()
-        reason = str(availability.get("reason", "当前操作不符合推荐流程，请先完成前置评估或处置。"))
-        if not when:
-            return True, ""
-        try:
-            return (True, "") if safe_eval(when, self._eval_ctx()) else (False, reason)
-        except Exception:
-            return False, reason
-
-    def is_action_allowed(self, action_id: str) -> Tuple[bool, str]:
-        """Backward-compatible API: V1.2.2 no longer blocks actions.
-
-        The UI should call check_standard_flow() for training guidance, but every
-        operation remains selectable as requested.
-        """
-        return True, ""
-
-    def get_current_manifestation_item(self) -> Dict[str, str]:
-        """Build a guideline-oriented, dynamic clinical presentation narrative.
-
-        The 2025 Chinese expert consensus emphasizes that anaphylaxis may involve
-        skin/mucosa, respiratory, gastrointestinal, cardiovascular and central
-        nervous systems, and that fatal/severe cases may be dominated by airway
-        obstruction or circulatory collapse. This narrative changes as the
-        simulated symptoms and vital signs evolve.
-        """
-        s = self.state.symptoms
-        v = self.state.vitals
-        f = self.state.flags
-        g = self.state.grade
-
-        skin = []
-        if s.get("rash", 0) >= 1:
-            skin.append("皮肤瘙痒、潮红、风团样皮疹")
-        if s.get("angioedema", 0) >= 1:
-            skin.append("口唇/眼睑或面部水肿")
-        if s.get("throat_tightness", 0) >= 1:
-            skin.append("喉部发紧、声音改变或吞咽不适")
-
-        resp = []
-        if s.get("cough", 0) >= 1:
-            resp.append("持续咳嗽")
-        if s.get("wheeze", 0) >= 1:
-            resp.append("喘息/支气管痉挛")
-        if s.get("stridor", 0) >= 1:
-            resp.append("喉鸣/上气道受累")
-        if s.get("cyanosis", 0) >= 1:
-            resp.append("口唇发绀")
-        if f.get("monitor_on", False):
-            spo2 = float(v.get("SpO2", 100))
-            if spo2 < 95:
-                resp.append(f"SpO₂下降至{spo2:.0f}%")
-        # V1.2.4: if bronchodilator nebulization has not been performed,
-        # do not show a completely symptom-free respiratory narrative after
-        # epinephrine/oxygen. Keep residual cough/mild wheeze visible for
-        # reassessment and teaching logic.
-        if f.get("epi_im_given", False) and not f.get("bronchodilator_neb", False) and not (f.get("dead", False) or f.get("cardiac_arrest", False)):
-            resp.append("仍有咳嗽/轻微喘息")
-
-        gi = []
-        if s.get("gi", 0) >= 1:
-            gi.append("腹痛、恶心或胃肠道不适")
-        if s.get("vomiting", 0) >= 1:
-            gi.append("呕吐")
-
-        cv = []
-        if s.get("poor_perfusion", 0) >= 1:
-            cv.append("四肢凉、毛细血管再充盈延长或末梢灌注差")
-        if f.get("bp_checked", False):
-            sbp = float(v.get("SBP", 999))
-            if sbp < self.age_sbp_threshold():
-                cv.append(f"收缩压{sbp:.0f} mmHg，低于儿童低血压阈值")
-            else:
-                baseline_sbp = float(self.state.baseline_vitals.get("SBP", sbp))
-                drop_pct = 100 * (baseline_sbp - sbp) / max(1.0, baseline_sbp)
-                if drop_pct >= self.scenario["thresholds"].get("hypotension_sbp_drop_pct", 30):
-                    cv.append(f"收缩压较基线下降约{drop_pct:.0f}%")
-        elif s.get("poor_perfusion", 0) >= 1:
-            cv.append("需立即测血压并复评循环状态")
-
-        neuro = []
-        if s.get("consciousness", 0) >= 1:
-            labels = {1: "烦躁不安", 2: "嗜睡", 3: "反应差/意识障碍"}
-            neuro.append(labels.get(int(s.get("consciousness", 1)), "意识状态改变"))
-        if f.get("dead", False) or f.get("cardiac_arrest", False) or g >= 4:
-            neuro.append("意识丧失或呼吸/心跳骤停风险极高")
-
-        parts = []
-        if skin:
-            parts.append("皮肤黏膜：" + "、".join(dict.fromkeys(skin)))
-        if resp:
-            parts.append("呼吸/气道：" + "、".join(dict.fromkeys(resp)))
-        if gi:
-            parts.append("胃肠道：" + "、".join(dict.fromkeys(gi)))
-        if cv:
-            parts.append("循环：" + "、".join(dict.fromkeys(cv)))
-        if neuro:
-            parts.append("神经/意识：" + "、".join(dict.fromkeys(neuro)))
-
-        if not parts:
-            parts.append("生命体征趋于稳定，仍需继续观察。")
-
-        dominant = {
-            1: "以皮肤黏膜/前驱表现为主，需警惕快速进展。",
-            2: "已出现呼吸、胃肠或早期循环受累，符合高度疑似严重过敏反应处置路径。",
-            3: "出现严重呼吸受累或循环衰竭表现，应按危重抢救处理。",
-            4: "已进入呼吸/心跳骤停或濒临骤停阶段，应立即CPR并启动高级生命支持。",
-        }.get(g, "请结合当前病情复评。")
-
-        return {
-            "summary": "；".join(parts),
-            "interpretation": dominant,
-        }
-
-    def get_progression_item(self) -> Dict[str, str]:
-        data = self.scenario.get("clinical_progression", {}) or {}
-        item = data.get(str(self.state.grade), {})
-        if not item:
-            return {"stage": f"分级 {self.state.grade}", "manifestations": "请结合当前症状和生命体征复评。"}
-        return {"stage": str(item.get("stage", "")), "manifestations": str(item.get("manifestations", ""))}
-
     def get_guided_prompt_item(self) -> Dict[str, str]:
         """Return the current coach-mode prompt with optional reason text.
 
@@ -385,8 +238,17 @@ class Simulator:
         while self.guided_index < len(self.guided_prompts):
             item = self.guided_prompts[self.guided_index]
             expr = item.get('done_when', '')
+            ctx = {
+                "t": self.state.t,
+                "vitals": SimpleNamespace(**self.state.vitals),
+                "symptoms": SimpleNamespace(**self.state.symptoms),
+                "flags": SimpleNamespace(**self.state.flags),
+                "age_sbp_threshold": self.age_sbp_threshold(),
+                "grade": self.state.grade,
+                "action_first_time": self.action_first_time,
+            }
             try:
-                done = safe_eval(expr, self._eval_ctx())
+                done = safe_eval(expr, ctx)
             except Exception:
                 done = False
             if done:
@@ -426,22 +288,46 @@ class Simulator:
         return f"生命体征：{temp_txt} | SpO₂ {spo2:.0f}% | HR {hr:.0f}/min | RR {rr:.0f}/min | BP {sbp:.0f}/{dbp:.0f} mmHg\n"
 
 
-    def format_status(self) -> str:
-        v = self.state.vitals
-        s = self.state.symptoms
-        g = self.state.grade
-        grade_name = {1:"I",2:"II",3:"III",4:"IV"}.get(g, str(g))
+    def _clinical_symptom_text(self) -> str:
+        """Human-facing symptom text.
 
-        manifestation = self.get_current_manifestation_item()
-        progression = self.get_progression_item()
-        progression_line = f"病情进展：{progression.get('stage','')}｜{progression.get('manifestations','')}\n"
+        Do not display internal grading or a misleading 'no abnormality' state.
+        In this IV-infusion case, mild cough/wheeze may persist until
+        bronchodilator nebulization and reassessment.
+        """
+        s = self.state.symptoms
+        f = self.state.flags
+        symptom_text = []
+        if s.get("rash", 0) >= 1:
+            symptom_text.append("皮疹/风团")
+        if s.get("angioedema", 0) >= 1:
+            symptom_text.append("血管性水肿")
+        if s.get("wheeze", 0) >= 1:
+            symptom_text.append("喘息/喘鸣")
+        if s.get("stridor", 0) >= 1:
+            symptom_text.append("喉鸣/声音改变")
+        if s.get("gi", 0) >= 1:
+            symptom_text.append("胃肠道症状")
+        if s.get("consciousness", 0) >= 1:
+            symptom_text.append(["烦躁", "嗜睡", "反应差"][min(2, int(s["consciousness"]) - 1)])
+
+        if symptom_text:
+            return "、".join(symptom_text)
+
+        if f.get("epi_im_given") and f.get("fluid_bolus_valid") and not f.get("bronchodilator_neb"):
+            return "循环较前改善，皮疹减轻，但仍有咳嗽/轻微喘息，需继续观察呼吸道表现。"
+        if f.get("bronchodilator_neb") and f.get("second_reassessment_done"):
+            return "生命体征趋于稳定，咳嗽/喘息较前减轻，仍需继续严密观察。"
+        return "症状较前缓解，仍需继续观察生命体征、呼吸、循环和二相反应风险"
+
+    def format_status(self) -> str:
         prompt = self.get_guided_prompt() if self.mode == "coach" else ""
         prompt_line = f"当前提示：{prompt}\n" if prompt else ""
         return (
-            f"时间：{self.state.t:>4}s | 分级：{grade_name}\n"
+            f"时间：{self.state.t:>4}s\n"
             + prompt_line
             + self._format_vitals_line()
-            + f"临床表现：{manifestation.get('summary','')}\n"
+            + f"当前临床表现：{self._clinical_symptom_text()}\n"
         )
 
     def print_coach_hint(self) -> None:
@@ -462,46 +348,229 @@ class Simulator:
                 print(" -", h)
             print()
 
-    def apply_action(self, action_id: str) -> None:
-        action = next((a for a in self.actions if a["id"] == action_id), None)
-        if not action:
-            self._log("action", "unknown_action", {"action_id": action_id})
-            return
-        flow_ok, flow_reason = self.check_standard_flow(action_id)
-        if (not flow_ok) and self.mode == "coach":
-            self.state.flags["training_flow_deviation_count"] = int(self.state.flags.get("training_flow_deviation_count", 0)) + 1
-            self.state.flags["last_training_flow_warning"] = flow_reason
-            self._log("action", "training_flow_warning", {"action_id": action_id, "reason": flow_reason})
+    def _find_action(self, action_id: str) -> Optional[Dict[str, Any]]:
+        return next((a for a in self.actions if a.get("id") == action_id), None)
 
+    def _first_attempt(self, action_id: str) -> bool:
         first_time = action_id not in self.action_first_time
         if first_time:
             self.action_first_time[action_id] = self.state.t
+        return first_time
 
+    def _award_points_once(self, score_key: str, points: int) -> int:
+        """Award custom points once without relying on first click timing."""
+        if points <= 0:
+            return 0
+        flag = f"_score_awarded_{score_key}"
+        if self.state.flags.get(flag, False):
+            return 0
+        self.score += int(points)
+        if self.score > self.max_score:
+            self.score = self.max_score
+        self.state.flags[flag] = True
+        return int(points)
+
+    def _award_action_score(self, action_id: str, action: Dict[str, Any], first_time: bool) -> int:
         sc = action.get("score", {})
         points = int(sc.get("points", 0))
+        if not first_time or points <= 0:
+            return 0
         window = int(sc.get("time_window_seconds", 999999))
-        gained = 0
+        gained = points if self.state.t <= window else max(0, points // 2)
+        self.score += gained
+        if self.score > self.max_score:
+            self.score = self.max_score
+        return gained
 
-        # Award score at most once per action ID (first execution only).
-        # Optional score_when keeps all buttons selectable while preventing
-        # premature/non-indicated execution from earning points.
-        score_allowed = True
-        score_when = str(sc.get("score_when", "") or "").strip()
-        if score_when:
-            try:
-                score_allowed = safe_eval(score_when, self._eval_ctx())
-            except Exception as e:
-                score_allowed = False
-                self._log("system", "score_when_eval_error", {"action_id": action_id, "expr": score_when, "error": str(e)})
-        if first_time and points > 0:
-            if score_allowed:
-                gained = points if self.state.t <= window else max(0, points // 2)
-                self.score += gained
-                if self.score > self.max_score:
-                    self.score = self.max_score
+    def _apply_action_effects_only(self, action_id: str) -> None:
+        action = self._find_action(action_id)
+        if action:
+            self.apply_effects(action.get("effects", {}))
+            self.state.grade = self.compute_grade()
+
+    def _is_unresolved_after_initial_support(self) -> bool:
+        v = self.state.vitals
+        s = self.state.symptoms
+        if v.get("SpO2", 100) < 95:
+            return True
+        if v.get("SBP", 999) < self.age_sbp_threshold():
+            return True
+        if s.get("stridor", 0) >= 1:
+            return True
+        if s.get("wheeze", 0) >= 2:
+            return True
+        if s.get("consciousness", 0) >= 1:
+            return True
+        if s.get("angioedema", 0) >= 2:
+            return True
+        return False
+
+    def _advanced_support_indicated(self) -> bool:
+        v = self.state.vitals
+        s = self.state.symptoms
+        if self.state.flags.get("cardiac_arrest", False):
+            return True
+        if v.get("SpO2", 100) < 90 or v.get("SBP", 999) < self.age_sbp_threshold():
+            return True
+        if s.get("stridor", 0) >= 2 or s.get("consciousness", 0) >= 2:
+            return True
+        if self.state.flags.get("repeat_epi_given", False) and self._is_unresolved_after_initial_support():
+            return True
+        return False
+
+    def apply_action(self, action_id: str) -> None:
+        action = self._find_action(action_id)
+        if not action:
+            self._log("action", "unknown_action", {"action_id": action_id})
+            return
+
+        # Custom actions whose score depends on prerequisites, not just first click.
+        if action_id == "reassess_first":
+            self._first_attempt(action_id)
+            if self.state.flags.get("epi_im_given", False) and self.state.flags.get("fluid_bolus_valid", False):
+                self.state.flags["first_reassessment_done"] = True
+                self.state.flags["initial_circulation_support_complete"] = True
+                self.state.flags["reassess_count"] = max(int(self.state.flags.get("reassess_count", 0)), 1)
+                unresolved = self._is_unresolved_after_initial_support()
+                self.state.flags["repeat_epi_indicated"] = bool(unresolved)
+                gained = self._award_points_once("reassess_first", int(action.get("score", {}).get("points", 0)))
+                self._log("action", action_id, {
+                    "label": action.get("label", ""),
+                    "gained": gained,
+                    "status": "valid",
+                    "repeat_epinephrine_indicated": unresolved,
+                    "result": "有效第一次复评"
+                })
             else:
-                self._log("action", "no_score_not_indicated_yet", {"action_id": action_id, "score_when": score_when})
+                self.state.flags["premature_first_reassessment"] = True
+                self._log("action", action_id, {
+                    "label": action.get("label", ""),
+                    "gained": 0,
+                    "status": "premature",
+                    "result": "已记录复评，但肌注肾上腺素和/或快速补液尚未有效完成，本次不计为有效第一次复评。"
+                })
+            return
 
+        if action_id == "reassess_second":
+            self._first_attempt(action_id)
+            if not self.state.flags.get("first_reassessment_done", False):
+                self.state.flags["premature_second_reassessment"] = True
+                self._log("action", action_id, {
+                    "label": action.get("label", ""),
+                    "gained": 0,
+                    "status": "premature",
+                    "result": "已记录复评，但第一次有效复评尚未完成，本次不计为有效第二次复评。"
+                })
+            elif self.state.flags.get("family_communication", False):
+                self.state.flags["late_second_reassessment"] = True
+                self._log("action", action_id, {
+                    "label": action.get("label", ""),
+                    "gained": 0,
+                    "status": "late",
+                    "result": "已记录复评，但已发生在告知家属之后，不计为告知前第二次复评。"
+                })
+            else:
+                self.state.flags["second_reassessment_done"] = True
+                self.state.flags["reassess_count"] = max(int(self.state.flags.get("reassess_count", 0)), 2)
+                gained = self._award_points_once("reassess_second", int(action.get("score", {}).get("points", 0)))
+                self._log("action", action_id, {
+                    "label": action.get("label", ""),
+                    "gained": gained,
+                    "status": "valid",
+                    "result": "有效第二次复评"
+                })
+            return
+
+        if action_id == "family_explain":
+            first_time = self._first_attempt(action_id)
+            self.apply_effects(action.get("effects", {}))
+            if not self.state.flags.get("second_reassessment_done", False):
+                self.state.flags["family_before_second_reassess"] = True
+            self._log("action", action_id, {
+                "label": action.get("label", ""),
+                "gained": 0,
+                "status": "recorded",
+                "result": "已记录家属告知" + ("；但发生在第二次复评之前" if self.state.flags.get("family_before_second_reassess", False) else "")
+            })
+            return
+
+        if action_id == "sbar_handoff":
+            self._first_attempt(action_id)
+            self.apply_effects(action.get("effects", {}))
+            valid = self.state.flags.get("family_communication", False) and self.state.flags.get("second_reassessment_done", False)
+            if valid:
+                self.state.flags["family_sbar_completed"] = True
+                gained = self._award_points_once("family_sbar", int(action.get("score", {}).get("points", 0)))
+                status = "valid"
+                result = "告知家属后完成SBAR交接，计入沟通交接得分。"
+            else:
+                gained = 0
+                status = "conditional_not_met"
+                result = "已记录SBAR交接；需在第二次复评和家属告知后完成，才计入沟通交接得分。"
+            self._log("action", action_id, {"label": action.get("label", ""), "gained": gained, "status": status, "result": result})
+            return
+
+        if action_id == "advanced_support":
+            self._first_attempt(action_id)
+            indicated = self._advanced_support_indicated()
+            self.state.flags["advanced_support_contacted"] = True
+            self.state.flags["advanced_support_indicated"] = bool(indicated)
+            self._log("action", action_id, {
+                "label": action.get("label", ""),
+                "gained": 0,
+                "status": "indicated" if indicated else "recorded_not_required",
+                "result": "已联系高级支持" if indicated else "已记录联系高级支持；当前未达到规范升级条件。"
+            })
+            return
+
+        if action_id == "cpr":
+            self._first_attempt(action_id)
+            indicated = bool(self.state.flags.get("cardiac_arrest", False) or self.state.vitals.get("SpO2", 100) <= self.scenario["thresholds"]["SpO2_arrest"])
+            self.state.flags["cpr_done"] = True
+            self.state.flags["cpr_indicated"] = indicated
+            self._log("action", action_id, {
+                "label": action.get("label", ""),
+                "gained": 0,
+                "status": "indicated" if indicated else "not_indicated",
+                "result": "心肺骤停状态下CPR已记录。" if indicated else "当前未达到心肺骤停条件，CPR不作为规范路径。"
+            })
+            return
+
+        if action_id == "nebulized_epinephrine":
+            first_time = self._first_attempt(action_id)
+            has_upper_airway = self.state.symptoms.get("stridor", 0) >= 1 or self.state.flags.get("airway_compromise", False)
+            after_epi = self.state.flags.get("epi_im_given", False)
+            if after_epi and has_upper_airway:
+                self.apply_effects(action.get("effects", {}))
+                status = "valid_adjunct"
+                result = "存在上气道受累表现，雾化肾上腺素作为辅助处理已记录。"
+            else:
+                self.state.flags["nebulized_epi_not_indicated"] = True
+                status = "not_indicated" if after_epi else "used_before_first_line"
+                result = "当前未见明确喉鸣/上气道梗阻表现，雾化肾上腺素暂非标准得分路径。"
+                if not after_epi:
+                    result = "未先完成肌注肾上腺素，雾化肾上腺素不能替代一线治疗。"
+            # keep existing secondary-drug penalty if before epinephrine
+            if not after_epi:
+                self.penalties += int(action.get("score", {}).get("penalty_points", 0))
+            self._log("action", action_id, {"label": action.get("label", ""), "gained": 0, "status": status, "result": result})
+            return
+
+        if action_id in ("repeat_epinephrine", "im_epinephrine", "fluid_bolus"):
+            # In the web UI these require a dose/volume panel. Direct CLI use only records the attempt.
+            self._first_attempt(action_id)
+            self._log("action", action_id, {
+                "label": action.get("label", ""),
+                "gained": 0,
+                "status": "input_required",
+                "result": "该操作需要输入剂量或容量后才能判定。"
+            })
+            return
+
+        first_time = self._first_attempt(action_id)
+        gained = self._award_action_score(action_id, action, first_time)
+
+        sc = action.get("score", {})
         if "penalty_points_always" in sc:
             p = int(sc.get("penalty_points_always", 0))
             if p:
@@ -520,40 +589,63 @@ class Simulator:
         self._log("action", action_id, {"label": action.get("label", ""), "gained": gained, "t": self.state.t})
 
     def apply_epinephrine_dose(self, dose_mg: float, action_id: str = "im_epinephrine") -> Dict[str, Any]:
-        """Apply IM epinephrine only after dose verification.
+        """Apply IM epinephrine after dose verification.
 
-        V1.2.1 guideline-aligned rule for this pediatric simulation:
-        - Target dose = 0.01 mg/kg, capped at 0.3 mg for the 2–11-year-old scenario range.
-        - A small tolerance of ±0.01 mg is accepted to avoid rounding artifacts.
-        - Below target: ineffective/underdose, no epinephrine score/effect.
-        - Above target but <= 0.3 mg: excess-dose medication-safety defect; partial physiologic effect, no score.
-        - Above 0.3 mg: serious medication-safety event with deterioration.
+        V1.2.5 rules:
+        - 1:1000 IM epinephrine, 0.01 mg/kg, single pediatric maximum 0.3 mg.
+        - Correct range: target dose ±0.01 mg.
+        - Below target range: ineffective underdose, no first-line effect or score.
+        - Above target range but <=0.3 mg: inaccurate high dose; effect is recorded, score is not awarded.
+        - >0.3 mg: serious medication safety event.
         """
         try:
             dose = float(dose_mg)
         except Exception:
             dose = 0.0
 
-        flow_ok, flow_reason = self.check_standard_flow(action_id)
-        if (not flow_ok) and self.mode == "coach":
-            self.state.flags["training_flow_deviation_count"] = int(self.state.flags.get("training_flow_deviation_count", 0)) + 1
-            self.state.flags["last_training_flow_warning"] = flow_reason
-            self._log("action", "training_flow_warning", {"action_id": action_id, "reason": flow_reason})
+        if action_id not in ("im_epinephrine", "repeat_epinephrine"):
+            action_id = "im_epinephrine"
+
+        action = self._find_action(action_id)
+        if not action:
+            return {"status": "error", "message": "未找到对应的肾上腺素操作。", "dose_mg": dose, "target_dose_mg": None}
+
+        self._first_attempt(action_id)
 
         weight = float(self.state.weight_kg)
+        target = round(min(0.01 * weight, 0.3), 3)
         max_single = 0.3
-        target = min(0.01 * weight, max_single)
-        target = round(target, 3)
         tolerance = 0.01
 
         self.state.flags["epi_last_dose_mg"] = round(dose, 3)
         self.state.flags["epi_target_dose_mg"] = target
-        self.state.flags["epi_max_single_mg"] = max_single
         self.state.flags["epi_dose_checked"] = True
         self.state.flags["epi_im_attempts"] = int(self.state.flags.get("epi_im_attempts", 0)) + 1
 
+        is_repeat = action_id == "repeat_epinephrine"
+        if is_repeat:
+            if not (self.state.flags.get("epi_im_given", False) and self.state.flags.get("fluid_bolus_valid", False) and self.state.flags.get("first_reassessment_done", False)):
+                self.state.flags["repeat_epi_premature"] = True
+                self._log("action", "repeat_epinephrine_premature", {"dose_mg": round(dose, 3), "target_dose_mg": target, "gained": 0, "result": "premature"})
+                return {
+                    "status": "not_indicated",
+                    "message": "再次肌注肾上腺素属于特殊路径：需先完成首次肌注、快速补液和第一次复评。",
+                    "dose_mg": dose,
+                    "target_dose_mg": target,
+                }
+            if not self._is_unresolved_after_initial_support():
+                self.state.flags["repeat_epi_not_indicated"] = True
+                self._log("action", "repeat_epinephrine_not_indicated", {"dose_mg": round(dose, 3), "target_dose_mg": target, "gained": 0, "result": "not_indicated"})
+                return {
+                    "status": "not_indicated",
+                    "message": "当前复评提示病情较前稳定，暂不需要再次肌注肾上腺素；本次记录为非必要重复。",
+                    "dose_mg": dose,
+                    "target_dose_mg": target,
+                }
+
         if dose > max_single + 1e-9:
             self.state.flags["epi_overdose_event"] = True
+            self.state.flags["serious_medication_error"] = True
             self.state.flags["tachycardia_heart_failure"] = True
             self.state.vitals["HR"] = 220
             self.state.vitals["RR"] = max(float(self.state.vitals.get("RR", 30)), 58)
@@ -561,119 +653,163 @@ class Simulator:
             self.state.vitals["SBP"] = min(float(self.state.vitals.get("SBP", 100)), 55)
             self.state.vitals["DBP"] = min(float(self.state.vitals.get("DBP", 60)), 32)
             self.state.symptoms["consciousness"] = max(int(self.state.symptoms.get("consciousness", 0)), 2)
-            self.state.symptoms["poor_perfusion"] = max(int(self.state.symptoms.get("poor_perfusion", 0)), 2)
             self.state.grade = self.compute_grade()
-            self._log("action", "im_epinephrine_overdose", {"action_id": action_id, "dose_mg": round(dose, 3), "target_dose_mg": target, "max_single_mg": max_single, "result": "serious_medication_error", "gained": 0})
-            return {"status": "overdose", "message": f"剂量 {dose:.2f} mg 超过儿童单次上限 {max_single:g} mg：判定为严重用药安全事件，本次肌注肾上腺素不得分。", "dose_mg": dose, "target_dose_mg": target}
+            self._log("action", "im_epinephrine_overdose" if not is_repeat else "repeat_epinephrine_overdose", {
+                "dose_mg": round(dose, 3),
+                "target_dose_mg": target,
+                "max_single_mg": max_single,
+                "result": "serious_medication_error",
+                "gained": 0,
+            })
+            return {
+                "status": "overdose",
+                "message": f"剂量 {dose:.2f} mg 超过儿童单次最大 {max_single:g} mg：判定为严重用药安全事件，本次不得分。",
+                "dose_mg": dose,
+                "target_dose_mg": target,
+            }
 
         if dose < target - tolerance:
             self.state.flags["epi_underdose_event"] = True
-            self._log("action", "im_epinephrine_underdose", {"action_id": action_id, "dose_mg": round(dose, 3), "target_dose_mg": target, "result": "ineffective", "gained": 0})
-            return {"status": "underdose", "message": f"剂量 {dose:.2f} mg 低于本例目标剂量 {target:g} mg：判定为操作无效，生命体征不会因肾上腺素改善。", "dose_mg": dose, "target_dose_mg": target}
+            self._log("action", "im_epinephrine_underdose" if not is_repeat else "repeat_epinephrine_underdose", {
+                "dose_mg": round(dose, 3),
+                "target_dose_mg": target,
+                "result": "ineffective",
+                "gained": 0,
+            })
+            return {
+                "status": "underdose",
+                "message": f"剂量 {dose:.2f} mg 低于本例正确剂量范围（约 {target:g} mg）：判定为剂量不足，生命体征不会因本次肾上腺素改善。",
+                "dose_mg": dose,
+                "target_dose_mg": target,
+            }
 
-        if dose > target + tolerance:
-            self.state.flags["epi_excess_dose_event"] = True
-            self._log("action", "im_epinephrine_excess_dose", {"action_id": action_id, "dose_mg": round(dose, 3), "target_dose_mg": target, "max_single_mg": max_single, "result": "excess_dose_partial_effect", "gained": 0})
-            # Partial physiologic effect without awarding the action score.
-            self.apply_effects({"delta_vitals": {"SBP": 4, "DBP": 2, "SpO2": 1, "HR": 6}, "delta_symptoms": {"wheeze": -1, "stridor": -1}})
-            self.state.grade = self.compute_grade()
-            return {"status": "excess", "message": f"剂量 {dose:.2f} mg 高于本例目标剂量 {target:g} mg，虽未超过儿童单次上限 {max_single:g} mg，但判定为剂量不准确/用药安全缺陷，本次不得分。", "dose_mg": dose, "target_dose_mg": target}
+        dose_high = dose > target + tolerance
+        if dose_high:
+            self.state.flags["epi_dose_high_event"] = True
 
-        self.state.flags["epi_valid_dose_mg"] = round(dose, 3)
-        self._log("action", "im_epinephrine_dose_verified", {"action_id": action_id, "dose_mg": round(dose, 3), "target_dose_mg": target, "max_single_mg": max_single, "result": "effective"})
-        self.apply_action(action_id)
-        return {"status": "valid", "message": f"剂量 {dose:.2f} mg 已确认有效：按肌注肾上腺素处置执行。", "dose_mg": dose, "target_dose_mg": target}
+        # Apply clinical effect. Initial epinephrine may score only if dose is correct.
+        self._apply_action_effects_only("im_epinephrine")
+        if is_repeat:
+            self.state.flags["repeat_epi_given"] = True
+            self.state.flags["repeat_epi_indicated"] = True
+            log_msg = "repeat_epinephrine_valid" if not dose_high else "repeat_epinephrine_dose_high"
+            gained = 0
+        else:
+            log_msg = "im_epinephrine_dose_verified" if not dose_high else "im_epinephrine_dose_high"
+            self.state.flags["epi_valid_dose_mg"] = round(dose, 3)
+            gained = 0 if dose_high else self._award_points_once("im_epinephrine", int(action.get("score", {}).get("points", 0)))
 
-    def apply_fluid_volume(self, volume_ml: float, action_id: str = "fluid_bolus") -> Dict[str, Any]:
-        """Apply crystalloid bolus only after volume verification.
+        self._log("action", log_msg, {
+            "dose_mg": round(dose, 3),
+            "target_dose_mg": target,
+            "result": "dose_high_effect_recorded" if dose_high else "effective",
+            "gained": gained,
+        })
+        if dose_high:
+            return {
+                "status": "dose_high",
+                "message": f"剂量 {dose:.2f} mg 高于本例目标剂量 {target:g} mg，但未超过儿童单次最大0.3 mg：已记录为剂量不准确/用药安全缺陷，本次不给予肾上腺素剂量得分。",
+                "dose_mg": dose,
+                "target_dose_mg": target,
+            }
+        return {
+            "status": "valid",
+            "message": f"剂量 {dose:.2f} mg 已确认有效：按肌注肾上腺素处置执行。",
+            "dose_mg": dose,
+            "target_dose_mg": target,
+        }
 
-        V1.2.4 infusion scenario rule:
-        - The child already has an IV line because the trigger occurs during infusion.
-        - Crystalloid bolus should be 10–20 ml/kg, capped at 500 ml for one bolus.
-        - Fluids support circulation but do not replace IM epinephrine.
+    def apply_fluid_bolus_volume(self, volume_ml: float) -> Dict[str, Any]:
+        """Apply rapid crystalloid bolus after volume verification.
+
+        V1.2.5 rules:
+        - Pediatric crystalloid bolus: 10-20 ml/kg.
+        - Single bolus maximum: 500 ml.
+        - The existing IV access must be preserved.
         """
-        try:
-            vol = float(volume_ml)
-        except Exception:
-            vol = 0.0
+        action_id = "fluid_bolus"
+        action = self._find_action(action_id)
+        if not action:
+            return {"status": "error", "message": "未找到快速补液操作。"}
 
-        flow_ok, flow_reason = self.check_standard_flow(action_id)
-        if (not flow_ok) and self.mode == "coach":
-            self.state.flags["training_flow_deviation_count"] = int(self.state.flags.get("training_flow_deviation_count", 0)) + 1
-            self.state.flags["last_training_flow_warning"] = flow_reason
-            self._log("action", "training_flow_warning", {"action_id": action_id, "reason": flow_reason})
+        self._first_attempt(action_id)
+        try:
+            volume = float(volume_ml)
+        except Exception:
+            volume = 0.0
 
         weight = float(self.state.weight_kg)
         min_ml = round(10 * weight, 1)
         max_ml = round(min(20 * weight, 500), 1)
+        self.state.flags["fluid_bolus_volume_ml"] = round(volume, 1)
+        self.state.flags["fluid_min_ml"] = min_ml
+        self.state.flags["fluid_max_ml"] = max_ml
+        self.state.flags["fluid_bolus_given"] = True
 
-        self.state.flags["fluid_last_volume_ml"] = round(vol, 1)
-        self.state.flags["fluid_target_min_ml"] = min_ml
-        self.state.flags["fluid_target_max_ml"] = max_ml
-        self.state.flags["fluid_volume_checked"] = True
+        if not self.state.flags.get("iv_access", True):
+            self.state.flags["fluid_bolus_valid"] = False
+            self._log("action", "fluid_bolus_invalid_no_iv", {
+                "volume_ml": round(volume, 1),
+                "min_ml": min_ml,
+                "max_ml": max_ml,
+                "gained": 0,
+                "result": "no_iv_access"
+            })
+            return {
+                "status": "invalid",
+                "message": "已记录补液操作，但静脉通路此前被拔除，流程矛盾，本次补液不计为有效。",
+                "volume_ml": volume,
+                "min_ml": min_ml,
+                "max_ml": max_ml,
+            }
 
+        if volume < min_ml:
+            self.state.flags["fluid_bolus_under"] = True
+            self.state.flags["fluid_bolus_valid"] = False
+            if not self.state.flags.get("epi_im_given", False):
+                self.state.flags["fluid_without_epi"] = True
+            self._log("action", "fluid_bolus_under", {"volume_ml": round(volume, 1), "min_ml": min_ml, "max_ml": max_ml, "gained": 0, "result": "insufficient_volume"})
+            return {
+                "status": "under",
+                "message": f"补液量 {volume:.0f} ml 低于本例最低合理量 {min_ml:.0f} ml（10 ml/kg），判定为循环支持不足。",
+                "volume_ml": volume,
+                "min_ml": min_ml,
+                "max_ml": max_ml,
+            }
+
+        if volume > max_ml:
+            self.state.flags["fluid_bolus_over"] = True
+            self.state.flags["fluid_bolus_valid"] = False
+            if not self.state.flags.get("epi_im_given", False):
+                self.state.flags["fluid_without_epi"] = True
+            self._log("action", "fluid_bolus_over", {"volume_ml": round(volume, 1), "min_ml": min_ml, "max_ml": max_ml, "gained": 0, "result": "excessive_volume"})
+            return {
+                "status": "over",
+                "message": f"补液量 {volume:.0f} ml 超过本例合理上限 {max_ml:.0f} ml（20 ml/kg且单次最大500 ml），判定为补液不当/容量风险。",
+                "volume_ml": volume,
+                "min_ml": min_ml,
+                "max_ml": max_ml,
+            }
+
+        self.state.flags["fluid_bolus_valid"] = True
         if not self.state.flags.get("epi_im_given", False):
-            self.state.flags["fluid_before_epi_event"] = True
-            self._log("action", "fluid_bolus_before_epinephrine", {
-                "action_id": action_id,
-                "volume_ml": round(vol, 1),
-                "target_min_ml": min_ml,
-                "target_max_ml": max_ml,
-                "result": "fluid_cannot_replace_epinephrine",
-                "gained": 0,
-            })
-            return {"status": "before_epi", "message": "补液不能替代肌注肾上腺素：请先完成一线急救药物处理。", "volume_ml": vol, "target_min_ml": min_ml, "target_max_ml": max_ml}
-
-        if not self.state.flags.get("iv_access", False):
-            self.state.flags["fluid_without_iv_event"] = True
-            self._log("action", "fluid_bolus_no_iv_access", {
-                "action_id": action_id,
-                "volume_ml": round(vol, 1),
-                "target_min_ml": min_ml,
-                "target_max_ml": max_ml,
-                "result": "invalid_no_iv_access",
-                "gained": 0,
-            })
-            return {"status": "no_iv", "message": "当前静脉通路已被拔除或不可用，补液无效。", "volume_ml": vol, "target_min_ml": min_ml, "target_max_ml": max_ml}
-
-        if vol < min_ml:
-            self.state.flags["fluid_under_volume_event"] = True
-            self._log("action", "fluid_bolus_under_volume", {
-                "action_id": action_id,
-                "volume_ml": round(vol, 1),
-                "target_min_ml": min_ml,
-                "target_max_ml": max_ml,
-                "result": "under_resuscitation",
-                "gained": 0,
-            })
-            return {"status": "under", "message": f"补液量 {vol:.0f} ml 低于本例建议下限 {min_ml:.0f} ml：判定为循环支持不足，本次快速补液不得分。", "volume_ml": vol, "target_min_ml": min_ml, "target_max_ml": max_ml}
-
-        if vol > max_ml:
-            self.state.flags["fluid_excess_volume_event"] = True
-            self._log("action", "fluid_bolus_excess_volume", {
-                "action_id": action_id,
-                "volume_ml": round(vol, 1),
-                "target_min_ml": min_ml,
-                "target_max_ml": max_ml,
-                "result": "excess_volume_risk",
-                "gained": 0,
-            })
-            # A too-large bolus may slightly improve BP but is not awarded.
-            self.apply_effects({"delta_vitals": {"SBP": 3, "DBP": 1, "HR": -1}})
-            self.state.grade = self.compute_grade()
-            return {"status": "excess", "message": f"补液量 {vol:.0f} ml 超过本例建议上限 {max_ml:.0f} ml：判定为补液不当/容量风险，本次不得分。", "volume_ml": vol, "target_min_ml": min_ml, "target_max_ml": max_ml}
-
-        self.state.flags["fluid_volume_valid"] = True
+            self.state.flags["fluid_without_epi"] = True
+        self._apply_action_effects_only(action_id)
+        gained = self._award_points_once("fluid_bolus", int(action.get("score", {}).get("points", 0)))
         self._log("action", "fluid_bolus_volume_verified", {
-            "action_id": action_id,
-            "volume_ml": round(vol, 1),
-            "target_min_ml": min_ml,
-            "target_max_ml": max_ml,
-            "result": "effective",
+            "volume_ml": round(volume, 1),
+            "min_ml": min_ml,
+            "max_ml": max_ml,
+            "gained": gained,
+            "result": "valid_volume"
         })
-        self.apply_action(action_id)
-        return {"status": "valid", "message": f"补液量 {vol:.0f} ml 已确认有效：本例合理范围为 {min_ml:.0f}–{max_ml:.0f} ml。", "volume_ml": vol, "target_min_ml": min_ml, "target_max_ml": max_ml}
-
+        return {
+            "status": "valid",
+            "message": f"补液量 {volume:.0f} ml 位于本例合理范围 {min_ml:.0f}–{max_ml:.0f} ml，按快速补液处置执行。",
+            "volume_ml": volume,
+            "min_ml": min_ml,
+            "max_ml": max_ml,
+        }
 
     def is_done(self) -> Tuple[bool, str]:
         ctx = {
@@ -707,48 +843,93 @@ class Simulator:
     def _process_safety_issues(self) -> List[str]:
         issues = []
         f = self.state.flags
+        if not f.get("stopped_infusion", False):
+            issues.append("未停用可疑药物/输液")
+        if not f.get("iv_access", True):
+            issues.append("拔除静脉通路，影响后续抢救用药和补液")
         if not f.get("help_called", False):
             issues.append("未呼救")
+        if "abc_assess" not in self.action_first_time:
+            issues.append("未进行ABC评估")
         if not f.get("oxygen_on", False):
-            issues.append("未给氧")
+            issues.append("未开放气道给氧")
+        if not f.get("positioned", False):
+            issues.append("未完成体位管理")
         if not f.get("monitor_on", False):
             issues.append("未连接监护")
         if not f.get("bp_checked", False):
-            issues.append("未测量血压/灌注评估")
-        if not f.get("first_reassessment_done", False):
-            issues.append("未完成肌注肾上腺素后第一次复评")
-        if not f.get("second_reassessment_done", False):
-            issues.append("未完成告知家属前第二次复评")
-        if int(f.get("reassess_count", 0)) < self.min_reassess_recommended:
-            issues.append("复评次数不足")
-        if not f.get("family_communication", False):
-            issues.append("未完成家属沟通")
-        if not f.get("sbar_handoff", False):
-            issues.append("未完成SBAR交接")
+            issues.append("未测量血压/评估循环状态")
+        if not f.get("epi_im_given", False):
+            issues.append("未完成有效肌注肾上腺素")
         if f.get("epi_underdose_event", False):
             issues.append("肾上腺素剂量不足/操作无效")
-        if f.get("epi_excess_dose_event", False):
-            issues.append("肾上腺素剂量高于本例目标剂量/剂量不准确")
+        if f.get("epi_dose_high_event", False):
+            issues.append("肾上腺素剂量高于目标剂量/用药安全缺陷")
         if f.get("epi_overdose_event", False):
-            issues.append("肾上腺素剂量超过0.3 mg/严重用药安全事件")
-        if f.get("fluid_before_epi_event", False):
-            issues.append("补液早于肾上腺素/不能替代一线治疗")
-        if f.get("fluid_under_volume_event", False):
-            issues.append("晶体液补液量不足")
-        if f.get("fluid_excess_volume_event", False):
-            issues.append("晶体液补液量过大/容量风险")
-        if f.get("fluid_without_iv_event", False):
-            issues.append("拔除静脉通路后补液无效")
+            issues.append("肾上腺素剂量超过儿童单次最大0.3 mg/严重用药安全事件")
+        if not f.get("fluid_bolus_valid", False):
+            issues.append("未完成有效快速补液")
+        if f.get("fluid_bolus_under", False):
+            issues.append("补液量低于10 ml/kg，循环支持不足")
+        if f.get("fluid_bolus_over", False):
+            issues.append("补液量超过20 ml/kg或单次500 ml，存在容量风险")
+        if f.get("fluid_without_epi", False) and not f.get("epi_im_given", False):
+            issues.append("仅补液但未有效肌注肾上腺素，不能替代一线治疗")
+        if not f.get("first_reassessment_done", False):
+            issues.append("未完成有效第一次复评")
+        if not f.get("bronchodilator_neb", False):
+            issues.append("持续咳嗽/喘息时未进行雾化支扩")
+        if not f.get("second_reassessment_done", False):
+            issues.append("未完成告知家属前第二次复评")
+        if f.get("family_before_second_reassess", False):
+            issues.append("家属告知早于第二次复评")
+        if not f.get("family_communication", False):
+            issues.append("未完成家属告知")
+        if not f.get("sbar_handoff", False):
+            issues.append("未完成SBAR交接")
+        if f.get("repeat_epi_premature", False):
+            issues.append("再次肌注肾上腺素时机过早")
+        if f.get("repeat_epi_not_indicated", False):
+            issues.append("病情已较前稳定时进行了非必要再次肌注")
+        if f.get("nebulized_epi_not_indicated", False):
+            issues.append("雾化肾上腺素使用条件不充分或替代一线治疗倾向")
+        if f.get("advanced_support_indicated", False) and not f.get("advanced_support_contacted", False):
+            issues.append("达到高级支持条件但未联系高级支持")
+        if f.get("cpr_indicated", False) and not f.get("cpr_done", False):
+            issues.append("达到心肺复苏条件但未CPR")
         return issues
 
     def build_report(self) -> Dict[str, Any]:
-        grade_map = {1:"I",2:"II",3:"III",4:"IV"}
-        critical_actions = [a for a in self.actions if a.get("category","").startswith("critical")]
-        missing = [a["id"] for a in critical_actions if a["id"] not in self.action_first_time]
+        grade_map = {1: "I", 2: "II", 3: "III", 4: "IV"}
+        critical_actions = [a for a in self.actions if a.get("category", "").startswith("critical")]
+        missing = []
+        for a in critical_actions:
+            aid = a.get("id", "")
+            if aid == "fluid_bolus":
+                if not self.state.flags.get("fluid_bolus_valid", False):
+                    missing.append(aid)
+            elif aid == "reassess_first":
+                if not self.state.flags.get("first_reassessment_done", False):
+                    missing.append(aid)
+            elif aid == "reassess_second":
+                if not self.state.flags.get("second_reassessment_done", False):
+                    missing.append(aid)
+            elif aid == "im_epinephrine":
+                if not self.state.flags.get("epi_im_given", False):
+                    missing.append(aid)
+            elif aid and aid not in self.action_first_time:
+                missing.append(aid)
 
         def t_of(aid: str) -> Optional[int]:
             return self.action_first_time.get(aid)
 
+        def first_log_time(message: str) -> Optional[int]:
+            for e in self.log:
+                if e.kind == "action" and e.message == message:
+                    return e.t
+            return None
+
+        f = self.state.flags
         report = {
             "scenario_id": self.scenario["scenario"]["id"],
             "scenario_title": self.scenario["scenario"]["title"],
@@ -765,7 +946,6 @@ class Simulator:
             "mode": self.mode,
             "end_time_seconds": self.state.t,
             "final_grade": grade_map.get(self.state.grade, str(self.state.grade)),
-            "final_progression": self.get_progression_item(),
             "final_vitals": self.state.vitals,
             "final_symptoms": self.state.symptoms,
             "score": max(0, self.score - self.penalties),
@@ -774,30 +954,46 @@ class Simulator:
             "max_score": self.max_score,
             "critical_missing": missing,
             "process_safety_issues": self._process_safety_issues(),
+            "clinical_pathway_flags": {
+                "initial_circulation_support_complete": bool(f.get("initial_circulation_support_complete", False)),
+                "repeat_epi_indicated": bool(f.get("repeat_epi_indicated", False)),
+                "repeat_epi_given": bool(f.get("repeat_epi_given", False)),
+                "advanced_support_indicated": bool(f.get("advanced_support_indicated", False)),
+                "advanced_support_contacted": bool(f.get("advanced_support_contacted", False)),
+                "cpr_indicated": bool(f.get("cpr_indicated", False)),
+                "cpr_done": bool(f.get("cpr_done", False)),
+                "family_sbar_completed": bool(f.get("family_sbar_completed", False)),
+            },
             "key_timeline": {
                 "stop_infusion": t_of("stop_infusion"),
                 "call_help": t_of("call_help"),
+                "abc_assess": t_of("abc_assess"),
                 "oxygen": t_of("high_flow_oxygen"),
+                "position": t_of("shock_position"),
                 "monitor": t_of("connect_monitor"),
                 "bp_check": t_of("check_bp"),
                 "epi_im": t_of("im_epinephrine"),
-                "repeat_epi_im": t_of("repeat_im_epinephrine"),
-                "epi_last_dose_mg": self.state.flags.get("epi_last_dose_mg", None),
-                "epi_target_dose_mg": self.state.flags.get("epi_target_dose_mg", None),
-                "epi_max_single_mg": self.state.flags.get("epi_max_single_mg", None),
+                "epi_last_dose_mg": f.get("epi_last_dose_mg", None),
+                "epi_target_dose_mg": f.get("epi_target_dose_mg", None),
+                "epi_dose_high_event": bool(f.get("epi_dose_high_event", False)),
+                "serious_medication_error": bool(f.get("serious_medication_error", False)),
                 "fluid": t_of("fluid_bolus"),
-                "fluid_last_volume_ml": self.state.flags.get("fluid_last_volume_ml", None),
-                "fluid_target_min_ml": self.state.flags.get("fluid_target_min_ml", None),
-                "fluid_target_max_ml": self.state.flags.get("fluid_target_max_ml", None),
-                "fluid_volume_valid": self.state.flags.get("fluid_volume_valid", False),
+                "fluid_bolus_volume_ml": f.get("fluid_bolus_volume_ml", None),
+                "fluid_min_ml": f.get("fluid_min_ml", None),
+                "fluid_max_ml": f.get("fluid_max_ml", None),
+                "fluid_bolus_valid": bool(f.get("fluid_bolus_valid", False)),
                 "first_reassessment": t_of("reassess_first"),
                 "second_reassessment": t_of("reassess_second"),
-                "advanced_support": t_of("call_icu_team"),
+                "reassess_count": int(f.get("reassess_count", 0)),
+                "bronchodilator": t_of("bronchodilator"),
+                "nebulized_epinephrine": t_of("nebulized_epinephrine"),
+                "repeat_epinephrine": t_of("repeat_epinephrine"),
+                "advanced_support": t_of("advanced_support"),
+                "cpr": t_of("cpr"),
                 "family_communication": t_of("family_explain"),
                 "sbar_handoff": t_of("sbar_handoff"),
-                "reassess_count": int(self.state.flags.get("reassess_count", 0)),
-                "training_flow_deviation_count": int(self.state.flags.get("training_flow_deviation_count", 0)),
-                "last_training_flow_warning": self.state.flags.get("last_training_flow_warning", ""),
+                "im_epinephrine_dose_verified_time": first_log_time("im_epinephrine_dose_verified"),
+                "fluid_bolus_volume_verified_time": first_log_time("fluid_bolus_volume_verified"),
             },
             "observe_recommendation": self.scenario.get("reporting", {}).get("observe_recommendation", {}),
             "log": [dict(t=e.t, kind=e.kind, message=e.message, data=e.data) for e in self.log],
