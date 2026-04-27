@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (V1.2.6 steroid score + delayed deterioration + airway branch)
+Pediatric Ward Anaphylaxis Simulator (V1.2.6a resuscitation display fix)
 
-特点（V1.2.6）：
+特点（V1.2.6a）：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
 - 操作菜单：仅显示“操作名称”，不提供引导性措辞
 - 自动评分：时间窗 + 过程扣分（仅用于培训）
@@ -275,6 +275,13 @@ class Simulator:
         temp = v.get("Temp", None)
         temp_txt = f"体温 {temp:.1f}℃" if isinstance(temp, (int, float)) else "体温 --"
 
+        arrest_display = self._resuscitation_vitals_display()
+        if arrest_display and f.get("monitor_on", False):
+            return (
+                f"生命体征：{temp_txt} | SpO₂ {arrest_display['SpO₂']} | "
+                f"HR {arrest_display['HR']} | RR {arrest_display['RR']} | BP {arrest_display['BP']}\n"
+            )
+
         if not f.get("monitor_on", False):
             return f"生命体征：{temp_txt}\n"
 
@@ -299,6 +306,14 @@ class Simulator:
         """
         s = self.state.symptoms
         f = self.state.flags
+        if f.get("dead", False):
+            return "无反应、无有效自主呼吸、脉搏未触及，已进入死亡/抢救失败结局。"
+        if f.get("cardiac_arrest", False) and not f.get("resuscitation_rosc", False):
+            if f.get("cpr_done", False):
+                return "CPR进行中：无有效自主呼吸，需持续胸外按压、球囊通气并等待高级生命支持接手。"
+            return "无反应、无有效自主呼吸，脉搏未触及，需立即CPR。"
+        if f.get("resuscitation_rosc", False):
+            return "已恢复可触及脉搏，仍需球囊/人工通气支持和高级生命支持团队进一步监护转运。"
         symptom_text = []
         if f.get("airway_obstruction_triggered", False):
             symptom_text.append("气道梗阻风险/通气受限")
@@ -406,6 +421,104 @@ class Simulator:
         ]
         return int(sum(checks))
 
+    def _cardiac_arrest_criteria(self) -> bool:
+        """Return True only when the scenario has progressed from pre-arrest shock
+        to a cardiac-arrest-like state.
+
+        V1.2.6a separates:
+        - pre-arrest decompensation: HR may be very high, BP/SpO2 very low;
+        - cardiac arrest: no effective circulation/breathing, CPR becomes indicated.
+        Very low SpO2 alone is not enough if circulation is still effective.
+        """
+        f = self.state.flags
+        if f.get("dead", False) or f.get("resuscitation_rosc", False):
+            return False
+        if f.get("cardiac_arrest", False):
+            return True
+        v = self.state.vitals
+        s = self.state.symptoms
+        spo2 = float(v.get("SpO2", 100))
+        sbp = float(v.get("SBP", 120))
+        hr = float(v.get("HR", 120))
+        rr = float(v.get("RR", 30))
+        arrest_spo2 = float(self.scenario.get("thresholds", {}).get("SpO2_arrest", 70))
+
+        severe_hypoxia = spo2 <= arrest_spo2
+        profound_shock = sbp <= 45 or (sbp < self.age_sbp_threshold() and s.get("consciousness", 0) >= 3)
+        ineffective_breathing = rr <= 8 or s.get("consciousness", 0) >= 3
+        decompensated_airway = bool(f.get("airway_obstruction_triggered", False) and spo2 <= arrest_spo2)
+        extreme_pre_arrest_tachy = bool(hr >= 210 and sbp <= 45 and spo2 <= arrest_spo2)
+
+        return bool(
+            (severe_hypoxia and (profound_shock or ineffective_breathing or decompensated_airway))
+            or extreme_pre_arrest_tachy
+        )
+
+    def _enter_cardiac_arrest_if_needed(self) -> None:
+        f = self.state.flags
+        if self._cardiac_arrest_criteria() and not f.get("cardiac_arrest", False):
+            f["cardiac_arrest"] = True
+            f["cpr_required"] = True
+            f["cpr_indicated"] = True
+            f["bvm_required"] = True
+            f["advanced_support_indicated"] = True
+            f["resuscitation_required"] = True
+            f["cardiac_arrest_time_sec"] = self.state.t
+            self._log("system", "cardiac_arrest_triggered", {
+                "reason": "severe_hypoxia_with_circulatory_or_ventilatory_failure",
+                "SpO2": self.state.vitals.get("SpO2"),
+                "HR": self.state.vitals.get("HR"),
+                "RR": self.state.vitals.get("RR"),
+                "SBP": self.state.vitals.get("SBP"),
+            })
+
+    def _update_resuscitation_status(self) -> None:
+        """Update post-arrest resuscitation flags.
+
+        ROSC is not tied to post-arrest IM epinephrine. In this ward-nurse
+        simulation, correct basic resuscitation is CPR + BVM ventilation + ALS
+        contact. ALS arrival is represented narratively by ROSC and handoff.
+        """
+        f = self.state.flags
+        if f.get("dead", False) or f.get("resuscitation_rosc", False):
+            return
+        if f.get("cardiac_arrest", False) and f.get("cpr_done", False) and f.get("bvm_done", False) and f.get("advanced_support_contacted", False):
+            f["resuscitation_initiated_correctly"] = True
+            f["resuscitation_rosc"] = True
+            f["cardiac_arrest"] = False
+            f["resuscitation_in_progress"] = False
+            f["resuscitation_rosc_time_sec"] = self.state.t
+            f["post_arrest_care_required"] = True
+            # After ROSC, values become measurable again but remain unstable;
+            # do not display full normalization.
+            self.state.vitals["SpO2"] = max(float(self.state.vitals.get("SpO2", 0)), 88.0)
+            self.state.vitals["HR"] = 145.0
+            self.state.vitals["RR"] = 30.0
+            self.state.vitals["SBP"] = max(float(self.state.vitals.get("SBP", 0)), 70.0)
+            self.state.vitals["DBP"] = max(float(self.state.vitals.get("DBP", 0)), 40.0)
+            self.state.symptoms["consciousness"] = min(int(self.state.symptoms.get("consciousness", 0)), 2)
+            self._log("system", "rosc_after_basic_resuscitation", {
+                "cpr_done": True,
+                "bvm_done": True,
+                "advanced_support_contacted": True,
+            })
+
+    def _resuscitation_vitals_display(self) -> Optional[Dict[str, str]]:
+        f = self.state.flags
+        if f.get("dead", False):
+            return {"SpO₂": "无可靠波形/不可测", "HR": "无脉搏/不可测", "RR": "无有效自主呼吸", "BP": "不可测"}
+        if f.get("cardiac_arrest", False) and not f.get("resuscitation_rosc", False):
+            return {"SpO₂": "无可靠波形/不可测", "HR": "无脉搏/不可测", "RR": "无有效自主呼吸", "BP": "不可测"}
+        if f.get("resuscitation_rosc", False):
+            v = self.state.vitals
+            return {
+                "SpO₂": f"{v.get('SpO2', 0):.0f}%（波形恢复，仍需支持）",
+                "HR": f"{v.get('HR', 0):.0f}/min（可触及脉搏）",
+                "RR": "球囊/人工通气支持",
+                "BP": f"{v.get('SBP', 0):.0f}/{v.get('DBP', 0):.0f} mmHg",
+            }
+        return None
+
     def _refresh_process_flags(self) -> None:
         """Refresh derived pathway flags used by dynamics and reports.
 
@@ -428,6 +541,7 @@ class Simulator:
             )
             if delay_node:
                 f["epinephrine_delay_after_core_steps"] = True
+        self._enter_cardiac_arrest_if_needed()
         # airway/BVM/ALS derived flags
         if self._airway_obstruction_indicated():
             f["airway_obstruction_triggered"] = True
@@ -437,6 +551,12 @@ class Simulator:
             f["advanced_support_indicated"] = True
         if self._advanced_support_indicated():
             f["advanced_support_indicated"] = True
+        if f.get("cardiac_arrest", False):
+            f["cpr_required"] = True
+            f["cpr_indicated"] = True
+            f["bvm_required"] = True
+            f["advanced_support_indicated"] = True
+        self._update_resuscitation_status()
 
     def _airway_obstruction_indicated(self) -> bool:
         v = self.state.vitals
@@ -454,6 +574,7 @@ class Simulator:
         f = self.state.flags
         return bool(
             f.get("bvm_required", False)
+            or f.get("cardiac_arrest", False)
             or (self._airway_obstruction_indicated() and (v.get("SpO2", 100) < 88 or s.get("consciousness", 0) >= 2 or v.get("RR", 30) < 10))
         )
 
@@ -587,6 +708,8 @@ class Simulator:
             indicated = self._advanced_support_indicated()
             self.state.flags["advanced_support_contacted"] = True
             self.state.flags["advanced_support_indicated"] = bool(indicated)
+            self._refresh_process_flags()
+            self.state.grade = self.compute_grade()
             self._log("action", action_id, {
                 "label": action.get("label", ""),
                 "gained": 0,
@@ -597,14 +720,19 @@ class Simulator:
 
         if action_id == "cpr":
             self._first_attempt(action_id)
-            indicated = bool(self.state.flags.get("cardiac_arrest", False) or self.state.vitals.get("SpO2", 100) <= self.scenario["thresholds"]["SpO2_arrest"])
+            self._enter_cardiac_arrest_if_needed()
+            indicated = bool(self.state.flags.get("cardiac_arrest", False) or self.state.flags.get("cpr_required", False))
             self.state.flags["cpr_done"] = True
             self.state.flags["cpr_indicated"] = indicated
+            if indicated:
+                self.state.flags["resuscitation_in_progress"] = True
+            self._refresh_process_flags()
+            self.state.grade = self.compute_grade()
             self._log("action", action_id, {
                 "label": action.get("label", ""),
                 "gained": 0,
                 "status": "indicated" if indicated else "not_indicated",
-                "result": "心肺骤停状态下CPR已记录。" if indicated else "当前未达到心肺骤停条件，CPR不作为规范路径。"
+                "result": "心肺骤停状态下CPR已启动；需配合球囊面罩通气并联系高级生命支持。" if indicated else "当前未达到心肺骤停条件，CPR不作为规范路径。"
             })
             return
 
@@ -617,7 +745,7 @@ class Simulator:
                 self.apply_effects(action.get("effects", {}))
                 self.state.flags["advanced_support_indicated"] = True
                 status = "indicated"
-                result = "已达到通气不足/严重气道梗阻条件，球囊面罩加压给氧作为危重分支处理已记录。"
+                result = "已达到通气不足/严重气道梗阻/心肺骤停条件，球囊面罩加压给氧作为危重分支处理已记录。"
             else:
                 self.state.flags["bvm_not_indicated"] = True
                 status = "not_indicated"
@@ -1088,8 +1216,12 @@ class Simulator:
             issues.append("雾化肾上腺素使用条件不充分或替代一线治疗倾向")
         if f.get("advanced_support_indicated", False) and not f.get("advanced_support_contacted", False):
             issues.append("达到高级支持条件但未联系高级支持")
-        if f.get("cpr_indicated", False) and not f.get("cpr_done", False):
+        if (f.get("cpr_required", False) or f.get("cpr_indicated", False)) and not f.get("cpr_done", False):
             issues.append("达到心肺复苏条件但未CPR")
+        if f.get("cardiac_arrest", False) and not f.get("resuscitation_rosc", False) and f.get("cpr_done", False) and not f.get("bvm_done", False):
+            issues.append("心肺复苏已启动但未进行球囊面罩通气支持")
+        if f.get("cardiac_arrest", False) and not f.get("resuscitation_rosc", False) and f.get("cpr_done", False) and not f.get("advanced_support_contacted", False):
+            issues.append("心肺复苏已启动但未联系高级生命支持")
         return issues
 
     def build_report(self) -> Dict[str, Any]:
@@ -1140,6 +1272,7 @@ class Simulator:
             "end_time_seconds": self.state.t,
             "final_grade": grade_map.get(self.state.grade, str(self.state.grade)),
             "final_vitals": self.state.vitals,
+            "final_vitals_display": self._resuscitation_vitals_display(),
             "final_symptoms": self.state.symptoms,
             "score": max(0, self.score - self.penalties),
             "raw_score": self.score,
@@ -1153,8 +1286,13 @@ class Simulator:
                 "repeat_epi_given": bool(f.get("repeat_epi_given", False)),
                 "advanced_support_indicated": bool(f.get("advanced_support_indicated", False)),
                 "advanced_support_contacted": bool(f.get("advanced_support_contacted", False)),
+                "cardiac_arrest": bool(f.get("cardiac_arrest", False)),
+                "cpr_required": bool(f.get("cpr_required", False)),
                 "cpr_indicated": bool(f.get("cpr_indicated", False)),
                 "cpr_done": bool(f.get("cpr_done", False)),
+                "resuscitation_in_progress": bool(f.get("resuscitation_in_progress", False)),
+                "resuscitation_initiated_correctly": bool(f.get("resuscitation_initiated_correctly", False)),
+                "resuscitation_rosc": bool(f.get("resuscitation_rosc", False)),
                 "family_sbar_completed": bool(f.get("family_sbar_completed", False)),
                 "steroid_valid": bool(f.get("steroid_valid", False)),
                 "airway_obstruction_triggered": bool(f.get("airway_obstruction_triggered", False)),
@@ -1195,6 +1333,8 @@ class Simulator:
                 "advanced_support": t_of("advanced_support"),
                 "bvm_ventilation": t_of("bvm_ventilation"),
                 "cpr": t_of("cpr"),
+                "cardiac_arrest_time_sec": f.get("cardiac_arrest_time_sec", None),
+                "resuscitation_rosc_time_sec": f.get("resuscitation_rosc_time_sec", None),
                 "epinephrine_delay_after_core_steps": bool(f.get("epinephrine_delay_after_core_steps", False)),
                 "airway_obstruction_triggered": bool(f.get("airway_obstruction_triggered", False)),
                 "bvm_required": bool(f.get("bvm_required", False)),
@@ -1309,9 +1449,13 @@ def save_report(report: Dict[str, Any], out_dir: str) -> Tuple[str, str]:
         lines.append(f"- {k}: {v}")
     lines.append("")
 
+    v_display = report.get("final_vitals_display")
     v = report["final_vitals"]
     lines.append("## 最终生命体征")
-    lines.append(f"- SpO₂ {v['SpO2']:.0f}% | HR {v['HR']:.0f}/min | RR {v['RR']:.0f}/min | BP {v['SBP']:.0f}/{v['DBP']:.0f} mmHg")
+    if isinstance(v_display, dict) and v_display:
+        lines.append(f"- SpO₂ {v_display.get('SpO₂','')} | HR {v_display.get('HR','')} | RR {v_display.get('RR','')} | BP {v_display.get('BP','')}")
+    else:
+        lines.append(f"- SpO₂ {v['SpO2']:.0f}% | HR {v['HR']:.0f}/min | RR {v['RR']:.0f}/min | BP {v['SBP']:.0f}/{v['DBP']:.0f} mmHg")
     lines.append("")
 
     lines.append("## 观察建议（教学用）")

@@ -262,6 +262,31 @@ def visible_vitals(sim: Simulator) -> Dict[str, str]:
     v = sim.state.vitals
     f = sim.state.flags
     out = {"体温": f"{v.get('Temp', 0):.1f} ℃"}
+
+    if f.get("dead", False) or (f.get("cardiac_arrest", False) and not f.get("resuscitation_rosc", False)):
+        if f.get("monitor_on", False):
+            out.update({
+                "SpO₂": "无可靠波形/不可测",
+                "HR": "无脉搏/不可测",
+                "RR": "无有效自主呼吸",
+            })
+        else:
+            out.update({"SpO₂": "未连接监护", "HR": "未连接监护", "RR": "无有效自主呼吸"})
+        out["BP"] = "不可测" if f.get("bp_checked", False) else "未测量"
+        return out
+
+    if f.get("resuscitation_rosc", False):
+        if f.get("monitor_on", False):
+            out.update({
+                "SpO₂": f"{v.get('SpO2', 0):.0f} %（波形恢复）",
+                "HR": f"{v.get('HR', 0):.0f} /min（可触及）",
+                "RR": "球囊/人工通气支持",
+            })
+        else:
+            out.update({"SpO₂": "未连接监护", "HR": "未连接监护", "RR": "球囊/人工通气支持"})
+        out["BP"] = f"{v.get('SBP', 0):.0f}/{v.get('DBP', 0):.0f} mmHg" if f.get("bp_checked", False) else "未测量"
+        return out
+
     if f.get("monitor_on", False):
         out.update({
             "SpO₂": f"{v.get('SpO2', 0):.0f} %",
@@ -280,6 +305,14 @@ def visible_vitals(sim: Simulator) -> Dict[str, str]:
 def symptoms_text(sim: Simulator) -> str:
     s = sim.state.symptoms
     f = sim.state.flags
+    if f.get("dead", False):
+        return "无反应、无有效自主呼吸、脉搏未触及，已进入死亡/抢救失败结局。"
+    if f.get("cardiac_arrest", False) and not f.get("resuscitation_rosc", False):
+        if f.get("cpr_done", False):
+            return "CPR进行中：无有效自主呼吸，需持续胸外按压、球囊通气并等待高级生命支持。"
+        return "无反应、无有效自主呼吸，脉搏未触及，需立即CPR。"
+    if f.get("resuscitation_rosc", False):
+        return "恢复可触及脉搏，仍需球囊/人工通气支持和高级生命支持团队进一步监护转运。"
     parts = []
     if s.get("rash", 0) >= 1:
         parts.append("皮疹/风团")
@@ -1785,6 +1818,10 @@ def vital_severity_class(sim: Simulator, key: str) -> str:
     """Visual cue only; formal scoring still comes from the simulation engine."""
     v = sim.state.vitals
     f = sim.state.flags
+    if f.get("dead", False) or (f.get("cardiac_arrest", False) and not f.get("resuscitation_rosc", False)):
+        return " danger"
+    if f.get("resuscitation_rosc", False):
+        return " warn"
     if key == "SpO₂" and f.get("monitor_on", False):
         spo2 = float(v.get("SpO2", 100))
         if spo2 < 90:
