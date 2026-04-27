@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.6 steroid-score delayed-deterioration airway-branch candidate
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.6b critical-transfer prompt-fix candidate
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -49,7 +49,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.6 steroid-score delayed-deterioration airway-branch candidate"
+APP_VERSION = "V1.2.6b critical-transfer prompt-fix candidate"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -279,11 +279,11 @@ def visible_vitals(sim: Simulator) -> Dict[str, str]:
         if f.get("monitor_on", False):
             out.update({
                 "SpO₂": f"{v.get('SpO2', 0):.0f} %（波形恢复）",
-                "HR": f"{v.get('HR', 0):.0f} /min（可触及）",
-                "RR": "球囊/人工通气支持",
+                "HR": f"{v.get('HR', 0):.0f} /min（可触及脉搏）",
+                "RR": "人工通气支持",
             })
         else:
-            out.update({"SpO₂": "未连接监护", "HR": "未连接监护", "RR": "球囊/人工通气支持"})
+            out.update({"SpO₂": "未连接监护", "HR": "未连接监护", "RR": "人工通气支持"})
         out["BP"] = f"{v.get('SBP', 0):.0f}/{v.get('DBP', 0):.0f} mmHg" if f.get("bp_checked", False) else "未测量"
         return out
 
@@ -305,36 +305,59 @@ def visible_vitals(sim: Simulator) -> Dict[str, str]:
 def symptoms_text(sim: Simulator) -> str:
     s = sim.state.symptoms
     f = sim.state.flags
+    v = sim.state.vitals
+
     if f.get("dead", False):
-        return "无反应、无有效自主呼吸、脉搏未触及，已进入死亡/抢救失败结局。"
+        return "患儿意识丧失，呼之不应，无有效自主呼吸，脉搏未触及。"
     if f.get("cardiac_arrest", False) and not f.get("resuscitation_rosc", False):
-        if f.get("cpr_done", False):
-            return "CPR进行中：无有效自主呼吸，需持续胸外按压、球囊通气并等待高级生命支持。"
-        return "无反应、无有效自主呼吸，脉搏未触及，需立即CPR。"
+        return "患儿意识丧失，呼之不应，无有效自主呼吸，脉搏未触及。"
     if f.get("resuscitation_rosc", False):
-        return "恢复可触及脉搏，仍需球囊/人工通气支持和高级生命支持团队进一步监护转运。"
+        return "患儿恢复可触及脉搏，高级生命支持团队已接手，拟转入PICU进一步治疗。"
+
+    spo2 = float(v.get("SpO2", 100))
+    sbp = float(v.get("SBP", 120))
+    consciousness = int(s.get("consciousness", 0))
+    sbp_thr = sim.age_sbp_threshold()
+    airway_flag = bool(f.get("airway_obstruction_triggered", False) or f.get("bvm_required", False))
+
+    # Objective deterioration text only; no next-step instruction is exposed in exam mode.
+    if airway_flag and (spo2 < 88 or consciousness >= 2):
+        return "患儿呼吸费力，面色发绀，吸气性呼吸困难，反应差。"
+    if spo2 <= 70 or sbp <= 45 or consciousness >= 3:
+        return "患儿面色发绀，反应差，呼吸浅弱或不规则，四肢湿冷。"
+    if spo2 < 85 or sbp < sbp_thr:
+        return "患儿喘息加重，面色苍白或发绀，烦躁或反应迟钝，末梢灌注差。"
+    if spo2 < 92 or int(s.get("wheeze", 0)) >= 2 or int(s.get("stridor", 0)) >= 1:
+        parts = ["咳嗽/喘息较前加重", "呼吸急促"]
+        if int(s.get("rash", 0)) >= 1:
+            parts.append("皮疹/风团明显")
+        if int(s.get("angioedema", 0)) >= 1:
+            parts.append("局部血管性水肿")
+        if int(s.get("stridor", 0)) >= 1:
+            parts.append("喉鸣或声音改变")
+        return "、".join(parts) + "。"
+
     parts = []
     if s.get("rash", 0) >= 1:
         parts.append("皮疹/风团")
     if s.get("angioedema", 0) >= 1:
         parts.append("血管性水肿")
     if s.get("wheeze", 0) >= 1:
-        parts.append("喘息/喘鸣")
+        parts.append("咳嗽/喘息")
     if s.get("stridor", 0) >= 1:
         parts.append("喉鸣/声音改变")
     if s.get("gi", 0) >= 1:
         parts.append("胃肠道症状")
-    if s.get("consciousness", 0) >= 1:
+    if consciousness >= 1:
         labels = ["烦躁", "嗜睡", "反应差"]
-        parts.append(labels[min(2, int(s.get("consciousness", 1)) - 1)])
+        parts.append(labels[min(2, consciousness - 1)])
     if parts:
-        return "、".join(parts)
+        return "、".join(parts) + "。"
     if f.get("epi_im_given") and f.get("fluid_bolus_valid") and not f.get("bronchodilator_neb"):
-        return "循环较前改善，皮疹减轻，但仍有咳嗽/轻微喘息，需继续观察呼吸道表现。"
+        return "循环较前改善，皮疹减轻，但仍有咳嗽/轻微喘息。"
     if f.get("bronchodilator_neb") and f.get("second_reassessment_done"):
-        return "生命体征趋于稳定，咳嗽/喘息较前减轻，仍需继续严密观察。"
-    return "症状较前缓解，仍需继续观察生命体征、呼吸、循环和二相反应风险"
-
+        return "生命体征趋于稳定，咳嗽/喘息较前减轻。"
+    return "患儿仍有轻度皮肤不适和呼吸道不适表现。"
 
 def grade_badge(sim: Simulator) -> str:
     # Grade is retained in backend reports, but not exposed as a diagnostic hint in the participant UI.
@@ -561,7 +584,7 @@ def make_database_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "full_report": report,
         "app_version": session.get("app_version", APP_VERSION),
         "session_id": session.get("session_id", ""),
-        "client_note": "saved_from_streamlit_v1_2_5_iv_dual_reassessment",
+        "client_note": "saved_from_streamlit_v1_2_6b_critical_transfer_prompt_fix",
     }
 
 
@@ -1289,7 +1312,7 @@ def render_participant_entry_page() -> None:
                 st.rerun()
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.2.6 控制台")
+    st.sidebar.title("V1.2.6b 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1907,7 +1930,7 @@ def render_patient_status(sim: Simulator, scenario: Dict[str, Any], changes: Dic
             changed_names.append("临床表现")
         if changed_vitals:
             changed_names.append("生命体征")
-        banner = f"<div class='change-banner flash'>⚠ {' / '.join(changed_names)} 已更新，请立即复评判断。</div>"
+        banner = f"<div class='change-banner flash'>{' / '.join(changed_names)} 状态已更新。</div>"
 
     st.markdown(
         f"""
@@ -1953,7 +1976,7 @@ def render_intro() -> None:
     with right:
         st.container(border=True).markdown(
             """
-            **V1.2.6 糖皮质激素计分与气道分支候选版**
+            **V1.2.6b 危重分支终点与考试提示去除修正版**
 
             本版在流程锁定基础上，采用25分标准路径：加入糖皮质激素剂量输入与计分，删除抗组胺药按钮，并将气道梗阻、球囊面罩加压给氧、高级支持、CPR作为条件性危重分支单独记录。系统按院区、科室和姓名首字母自动生成匿名参与者编号，并在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
 
@@ -2022,7 +2045,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.2.6 研究质控与导出增强版")
+    st.markdown("### 管理员后台｜V1.2.6b 研究质控与导出增强版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -2425,7 +2448,14 @@ def render_report() -> None:
         report = enrich_report(st.session_state.active_simulator.build_report(), end_reason=st.session_state.end_reason)
         st.session_state.last_report = report
 
-    st.success(f"情景结束：{st.session_state.end_reason}")
+    end_reason_labels = {
+        "success": "标准路径完成，病情稳定",
+        "failure": "失败结局",
+        "timeout": "超时未完成",
+        "manual_end": "手动结束",
+        "critical_resuscitated_transfer_picu": "危重抢救后转入PICU",
+    }
+    st.success(f"情景结束：{end_reason_labels.get(st.session_state.end_reason, st.session_state.end_reason)}")
     session_meta = report.get("session", {}) or {}
     st.caption(
         f"参与者：{session_meta.get('participant_id', '')}｜单位：{session_meta.get('institution', '')}"

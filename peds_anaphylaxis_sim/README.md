@@ -104,6 +104,6 @@ python engine.py --scenario scenarios/peds_ward_anaphylaxis_iv_v1_1_training.jso
 - Added baseline flag `airway_compromise` to prevent rule_eval_error and enable oxygen limitation rule.
 
 
-## V1.2.6a 说明
+## V1.2.6c 说明
 
 本版新增糖皮质激素剂量输入与5分计分，删除抗组胺药按钮，并将气道梗阻、球囊面罩加压给氧、高级生命支持和CPR作为条件性危重分支单独记录。

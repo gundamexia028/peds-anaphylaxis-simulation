@@ -4,8 +4,8 @@
     "id": "peds_ward_anaphylaxis_iv_variantA",
     "title": "儿科药物诱发过敏反应动态分支虚拟仿真｜变体版（皮肤表现不典型）",
     "language": "zh-CN",
-    "version": "V1.2.6a-resuscitation-display-fix-candidate",
-    "source_note": "基于V1.2.6路径，修正心肺骤停生命体征显示、CPR适用条件与ROSC叙事逻辑；供教学模拟与科研评价使用。",
+    "version": "V1.2.6c",
+    "source_note": "基于V1.2.6b路径，彻底去除考试模式下CPR/气道危重分支提示性文字，并增加当前症状栏随生命体征、气道状态和意识状态动态恶化的显示逻辑。",
     "mode_defaults": {
       "coach": true,
       "tick_seconds": 30
@@ -13,7 +13,7 @@
     "script_role": "variant",
     "script_name": "variantA",
     "display_name": "变体版（皮肤表现不典型）",
-    "scoring_basis": "V1.2.6a: 25-point standard path unchanged; steroid remains scored; airway obstruction/BVM/ALS/CPR remain conditional branch records; cardiac-arrest display overrides HR/BP/RR/SpO2 and ROSC is based on CPR + BVM ventilation + ALS contact, not post-arrest IM epinephrine."
+    "scoring_basis": "V1.2.6b: 25-point standard path unchanged; steroid remains scored; airway obstruction/BVM/ALS/CPR remain conditional branch records; exam-mode clinical display is objective only; critical branch ends as transfer to PICU after CPR + BVM + ALS contact."
   },
   "patient": {
     "age_years": 3,
@@ -951,6 +951,10 @@
     "deterioration_rule": "在前7项基础抢救动作完成前，未肌注肾上腺素导致的生命体征演化较缓；若达到第8关键节点或已完成多数基础步骤仍未肌注肾上腺素，启动明显生命体征波动与气道/休克风险分支。"
   },
   "version_notes": {
-    "V1.2.6": "糖皮质激素计分版：总分25分；删除抗组胺药；新增糖皮质激素剂量输入；未及时肌注肾上腺素改为第8关键节点后加速恶化；新增气道梗阻/球囊加压给氧条件性分支。"
+    "V1.2.6": "糖皮质激素计分版：总分25分；删除抗组胺药；新增糖皮质激素剂量输入；未及时肌注肾上腺素改为第8关键节点后加速恶化；新增气道梗阻/球囊加压给氧条件性分支。",
+    "V1.2.6b": "去除考试模式CPR/高级支持提示性文字；CPR+球囊面罩加压给氧+联系高级生命支持后，作为危重抢救后转入PICU终点。"
+  },
+  "version_history": {
+    "V1.2.6c": "去除“CPR操作提示/CPR状态提示/胸外按压操作提示”等提示性文本；当前症状栏改为随低氧、低血压、气道梗阻和意识状态动态进展。"
   }
 }

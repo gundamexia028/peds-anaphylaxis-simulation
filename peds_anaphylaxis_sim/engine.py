@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (V1.2.6a resuscitation display fix)
+Pediatric Ward Anaphylaxis Simulator (V1.2.6b critical transfer prompt fix)
 
-特点（V1.2.6a）：
+特点（V1.2.6b）：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
 - 操作菜单：仅显示“操作名称”，不提供引导性措辞
 - 自动评分：时间窗 + 过程扣分（仅用于培训）
@@ -298,46 +298,71 @@ class Simulator:
 
 
     def _clinical_symptom_text(self) -> str:
-        """Human-facing symptom text.
+        """Human-facing objective symptom text for participant UI.
 
-        Do not display internal grading or a misleading 'no abnormality' state.
-        In this IV-infusion case, mild cough/wheeze may persist until
-        bronchodilator nebulization and reassessment.
+        V1.2.6c rule:
+        - exam UI must only describe what is observed; it must not tell the learner
+          what action to take, especially in airway/CPR branches;
+        - symptom text should progress with vitals and pathway flags, so that
+          deterioration is visible in the clinical presentation, not only in the
+          numeric vital signs.
         """
         s = self.state.symptoms
         f = self.state.flags
+        v = self.state.vitals
+
         if f.get("dead", False):
-            return "无反应、无有效自主呼吸、脉搏未触及，已进入死亡/抢救失败结局。"
+            return "患儿意识丧失，呼之不应，无有效自主呼吸，脉搏未触及。"
         if f.get("cardiac_arrest", False) and not f.get("resuscitation_rosc", False):
-            if f.get("cpr_done", False):
-                return "CPR进行中：无有效自主呼吸，需持续胸外按压、球囊通气并等待高级生命支持接手。"
-            return "无反应、无有效自主呼吸，脉搏未触及，需立即CPR。"
+            return "患儿意识丧失，呼之不应，无有效自主呼吸，脉搏未触及。"
         if f.get("resuscitation_rosc", False):
-            return "已恢复可触及脉搏，仍需球囊/人工通气支持和高级生命支持团队进一步监护转运。"
+            return "患儿恢复可触及脉搏，高级生命支持团队已接手，拟转入PICU进一步治疗。"
+
+        spo2 = float(v.get("SpO2", 100))
+        sbp = float(v.get("SBP", 120))
+        consciousness = int(s.get("consciousness", 0))
+        sbp_thr = self.age_sbp_threshold()
+        airway_flag = bool(f.get("airway_obstruction_triggered", False) or f.get("bvm_required", False))
+
+        # Severe non-arrest deterioration: objective descriptors only.
+        if airway_flag and (spo2 < 88 or consciousness >= 2):
+            return "患儿呼吸费力，面色发绀，吸气性呼吸困难，反应差。"
+        if spo2 <= 70 or sbp <= 45 or consciousness >= 3:
+            return "患儿面色发绀，反应差，呼吸浅弱或不规则，四肢湿冷。"
+        if spo2 < 85 or sbp < sbp_thr:
+            return "患儿喘息加重，面色苍白或发绀，烦躁或反应迟钝，末梢灌注差。"
+        if spo2 < 92 or int(s.get("wheeze", 0)) >= 2 or int(s.get("stridor", 0)) >= 1:
+            parts = ["咳嗽/喘息较前加重", "呼吸急促"]
+            if int(s.get("rash", 0)) >= 1:
+                parts.append("皮疹/风团明显")
+            if int(s.get("angioedema", 0)) >= 1:
+                parts.append("局部血管性水肿")
+            if int(s.get("stridor", 0)) >= 1:
+                parts.append("喉鸣或声音改变")
+            return "、".join(parts) + "。"
+
         symptom_text = []
-        if f.get("airway_obstruction_triggered", False):
-            symptom_text.append("气道梗阻风险/通气受限")
         if s.get("rash", 0) >= 1:
             symptom_text.append("皮疹/风团")
         if s.get("angioedema", 0) >= 1:
             symptom_text.append("血管性水肿")
         if s.get("wheeze", 0) >= 1:
-            symptom_text.append("喘息/喘鸣")
+            symptom_text.append("咳嗽/喘息")
         if s.get("stridor", 0) >= 1:
             symptom_text.append("喉鸣/声音改变")
         if s.get("gi", 0) >= 1:
             symptom_text.append("胃肠道症状")
-        if s.get("consciousness", 0) >= 1:
-            symptom_text.append(["烦躁", "嗜睡", "反应差"][min(2, int(s["consciousness"]) - 1)])
+        if consciousness >= 1:
+            symptom_text.append(["烦躁", "嗜睡", "反应差"][min(2, consciousness - 1)])
 
         if symptom_text:
-            return "、".join(symptom_text)
+            return "、".join(symptom_text) + "。"
 
         if f.get("epi_im_given") and f.get("fluid_bolus_valid") and not f.get("bronchodilator_neb"):
-            return "循环较前改善，皮疹减轻，但仍有咳嗽/轻微喘息，需继续观察呼吸道表现。"
+            return "循环较前改善，皮疹减轻，但仍有咳嗽/轻微喘息。"
         if f.get("bronchodilator_neb") and f.get("second_reassessment_done"):
-            return "生命体征趋于稳定，咳嗽/喘息较前减轻，仍需继续严密观察。"
-        return "症状较前缓解，仍需继续观察生命体征、呼吸、循环和二相反应风险"
+            return "生命体征趋于稳定，咳嗽/喘息较前减轻。"
+        return "患儿仍有轻度皮肤不适和呼吸道不适表现。"
 
     def format_status(self) -> str:
         prompt = self.get_guided_prompt() if self.mode == "coach" else ""
@@ -425,7 +450,7 @@ class Simulator:
         """Return True only when the scenario has progressed from pre-arrest shock
         to a cardiac-arrest-like state.
 
-        V1.2.6a separates:
+        V1.2.6a/V1.2.6b separates:
         - pre-arrest decompensation: HR may be very high, BP/SpO2 very low;
         - cardiac arrest: no effective circulation/breathing, CPR becomes indicated.
         Very low SpO2 alone is not enough if circulation is still effective.
@@ -489,6 +514,10 @@ class Simulator:
             f["resuscitation_in_progress"] = False
             f["resuscitation_rosc_time_sec"] = self.state.t
             f["post_arrest_care_required"] = True
+            f["critical_resuscitated_transfer_picu"] = True
+            f["critical_transfer_picu"] = True
+            f["scenario_terminal_critical_transfer"] = True
+            f["outcome_class"] = "critical_resuscitated_transfer_picu"
             # After ROSC, values become measurable again but remain unstable;
             # do not display full normalization.
             self.state.vitals["SpO2"] = max(float(self.state.vitals.get("SpO2", 0)), 88.0)
@@ -512,9 +541,9 @@ class Simulator:
         if f.get("resuscitation_rosc", False):
             v = self.state.vitals
             return {
-                "SpO₂": f"{v.get('SpO2', 0):.0f}%（波形恢复，仍需支持）",
+                "SpO₂": f"{v.get('SpO2', 0):.0f}%（波形恢复）",
                 "HR": f"{v.get('HR', 0):.0f}/min（可触及脉搏）",
-                "RR": "球囊/人工通气支持",
+                "RR": "人工通气支持",
                 "BP": f"{v.get('SBP', 0):.0f}/{v.get('DBP', 0):.0f} mmHg",
             }
         return None
@@ -714,7 +743,7 @@ class Simulator:
                 "label": action.get("label", ""),
                 "gained": 0,
                 "status": "indicated" if indicated else "recorded_not_required",
-                "result": "已联系高级支持" if indicated else "已记录联系高级支持；当前未达到规范升级条件。"
+                "result": "高级生命支持联系已记录。" if indicated else "已记录联系高级生命支持；当前未达到规范升级条件。"
             })
             return
 
@@ -732,7 +761,7 @@ class Simulator:
                 "label": action.get("label", ""),
                 "gained": 0,
                 "status": "indicated" if indicated else "not_indicated",
-                "result": "心肺骤停状态下CPR已启动；需配合球囊面罩通气并联系高级生命支持。" if indicated else "当前未达到心肺骤停条件，CPR不作为规范路径。"
+                "result": "CPR操作已记录。" if indicated else "当前未达到心肺骤停条件，CPR记录为不适用操作。"
             })
             return
 
@@ -745,7 +774,7 @@ class Simulator:
                 self.apply_effects(action.get("effects", {}))
                 self.state.flags["advanced_support_indicated"] = True
                 status = "indicated"
-                result = "已达到通气不足/严重气道梗阻/心肺骤停条件，球囊面罩加压给氧作为危重分支处理已记录。"
+                result = "球囊面罩加压给氧已记录。"
             else:
                 self.state.flags["bvm_not_indicated"] = True
                 status = "not_indicated"
@@ -1130,6 +1159,9 @@ class Simulator:
         succ = self.scenario["end_conditions"]["success_when"]
         fail = self.scenario["end_conditions"]["failure_when"]
 
+        if self.state.flags.get("critical_resuscitated_transfer_picu", False):
+            return True, "critical_resuscitated_transfer_picu"
+
         try:
             if safe_eval(fail, ctx):
                 return True, "failure"
@@ -1274,6 +1306,7 @@ class Simulator:
             "final_vitals": self.state.vitals,
             "final_vitals_display": self._resuscitation_vitals_display(),
             "final_symptoms": self.state.symptoms,
+            "outcome_class": f.get("outcome_class", ""),
             "score": max(0, self.score - self.penalties),
             "raw_score": self.score,
             "penalties": self.penalties,
@@ -1293,6 +1326,8 @@ class Simulator:
                 "resuscitation_in_progress": bool(f.get("resuscitation_in_progress", False)),
                 "resuscitation_initiated_correctly": bool(f.get("resuscitation_initiated_correctly", False)),
                 "resuscitation_rosc": bool(f.get("resuscitation_rosc", False)),
+                "critical_resuscitated_transfer_picu": bool(f.get("critical_resuscitated_transfer_picu", False)),
+                "critical_transfer_picu": bool(f.get("critical_transfer_picu", False)),
                 "family_sbar_completed": bool(f.get("family_sbar_completed", False)),
                 "steroid_valid": bool(f.get("steroid_valid", False)),
                 "airway_obstruction_triggered": bool(f.get("airway_obstruction_triggered", False)),
