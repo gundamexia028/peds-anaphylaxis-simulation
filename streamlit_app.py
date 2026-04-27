@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.6b critical-transfer prompt-fix candidate
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.6d arrest-no-CPR death-event candidate
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -49,7 +49,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.6b critical-transfer prompt-fix candidate"
+APP_VERSION = "V1.2.6d arrest-no-CPR death-event candidate"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -584,7 +584,7 @@ def make_database_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "full_report": report,
         "app_version": session.get("app_version", APP_VERSION),
         "session_id": session.get("session_id", ""),
-        "client_note": "saved_from_streamlit_v1_2_6b_critical_transfer_prompt_fix",
+        "client_note": "saved_from_streamlit_v1_2_6d_arrest_no_cpr_death_event",
     }
 
 
@@ -1312,7 +1312,7 @@ def render_participant_entry_page() -> None:
                 st.rerun()
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.2.6b 控制台")
+    st.sidebar.title("V1.2.6d 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1976,7 +1976,7 @@ def render_intro() -> None:
     with right:
         st.container(border=True).markdown(
             """
-            **V1.2.6b 危重分支终点与考试提示去除修正版**
+            **V1.2.6d 心肺骤停未CPR死亡事件记录修正版**
 
             本版在流程锁定基础上，采用25分标准路径：加入糖皮质激素剂量输入与计分，删除抗组胺药按钮，并将气道梗阻、球囊面罩加压给氧、高级支持、CPR作为条件性危重分支单独记录。系统按院区、科室和姓名首字母自动生成匿名参与者编号，并在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
 
@@ -2045,7 +2045,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.2.6b 研究质控与导出增强版")
+    st.markdown("### 管理员后台｜V1.2.6d 研究质控与导出增强版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -2399,7 +2399,18 @@ def render_simulation() -> None:
                         ):
                             st.session_state.last_dose_feedback = ""
                             st.session_state.last_dose_feedback_level = ""
-                            if aid in ("im_epinephrine", "repeat_epinephrine"):
+                            if (
+                                sim.state.flags.get("cardiac_arrest", False)
+                                and not sim.state.flags.get("cpr_done", False)
+                                and aid != "cpr"
+                            ):
+                                # V1.2.6d: once cardiac arrest is present, the immediate
+                                # next operation must be CPR. Do not open dose/volume panels
+                                # for a non-CPR choice; record terminal death directly.
+                                sim.apply_action(aid)
+                                finalize_if_done()
+                                st.rerun()
+                            elif aid in ("im_epinephrine", "repeat_epinephrine"):
                                 st.session_state.pending_dose_action_id = aid
                                 st.session_state.pending_dose_action_label = full_label
                                 st.rerun()

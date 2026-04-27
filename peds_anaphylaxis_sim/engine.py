@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (V1.2.6b critical transfer prompt fix)
+Pediatric Ward Anaphylaxis Simulator (V1.2.6e vital recovery bounds fix)
 
-特点（V1.2.6b）：
+特点（V1.2.6e）：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
 - 操作菜单：仅显示“操作名称”，不提供引导性措辞
 - 自动评分：时间窗 + 过程扣分（仅用于培训）
@@ -200,10 +200,87 @@ class Simulator:
         self.state.vitals["DBP"] = clamp(self.state.vitals.get("DBP", 55), 20, 110)
         for k in list(self.state.symptoms.keys()):
             self.state.symptoms[k] = int(clamp(self.state.symptoms[k], 0, 3))
+        self._enforce_physiologic_vital_bounds()
+
+    def _normal_recovery_bounds(self) -> Dict[str, float]:
+        """Age-adapted display bounds for the standard recovery branch.
+
+        These are not clinical decision cutoffs. They prevent stacked positive
+        effects from creating impossible recovery values such as HR 64/min,
+        RR 5/min, BP 160/109 mmHg, or SpO2 100% during ordinary stabilization.
+        """
+        age = int(getattr(self.state, "age_years", 6) or 6)
+        if age <= 3:
+            hr_min, rr_min = 110.0, 24.0
+        elif age <= 5:
+            hr_min, rr_min = 105.0, 22.0
+        else:
+            hr_min, rr_min = 100.0, 20.0
+        sbp_cap = min(120.0, max(100.0, 100.0 + 2.0 * age))
+        dbp_cap = min(80.0, max(65.0, 60.0 + age))
+        return {"hr_min": hr_min, "rr_min": rr_min, "sbp_cap": sbp_cap, "dbp_cap": dbp_cap}
+
+    def _enforce_physiologic_vital_bounds(self) -> None:
+        """Keep vital signs physiologically plausible after cumulative effects.
+
+        V1.2.6e separates three states:
+        1) cardiac arrest/death: values are displayed by the arrest overlay;
+        2) post-arrest ROSC: measurable but unstable values, not full normalization;
+        3) standard recovery: no over-correction below/above plausible ranges.
+        """
+        f = self.state.flags
+        v = self.state.vitals
+
+        if f.get("dead", False) or f.get("cardiac_arrest", False):
+            return
+
+        if f.get("resuscitation_rosc", False):
+            v["SpO2"] = clamp(float(v.get("SpO2", 88)), 88, 94)
+            v["HR"] = clamp(float(v.get("HR", 145)), 120, 160)
+            # RR may be displayed as artificial ventilation support, but keep the
+            # stored number within an unstable post-arrest range.
+            v["RR"] = clamp(float(v.get("RR", 30)), 24, 40)
+            v["SBP"] = clamp(float(v.get("SBP", 75)), 65, 100)
+            v["DBP"] = clamp(float(v.get("DBP", 45)), 35, 65)
+            return
+
+        # In non-arrest states, 100% saturation after every supportive action is
+        # too perfect for this scenario. Keep it below a realistic display cap.
+        v["SpO2"] = min(float(v.get("SpO2", 98)), 98.0)
+
+        standard_recovery = bool(
+            f.get("epi_im_given", False)
+            and f.get("stopped_infusion", False)
+            and f.get("oxygen_on", False)
+            and not f.get("epi_overdose_event", False)
+            and not f.get("tachycardia_heart_failure", False)
+            and not f.get("airway_obstruction_triggered", False)
+        )
+        if standard_recovery:
+            b = self._normal_recovery_bounds()
+            v["HR"] = max(float(v.get("HR", 120)), b["hr_min"])
+            v["RR"] = max(float(v.get("RR", 28)), b["rr_min"])
+            v["SBP"] = min(float(v.get("SBP", 100)), b["sbp_cap"])
+            v["DBP"] = min(float(v.get("DBP", 62)), b["dbp_cap"])
 
     def tick(self) -> None:
+        if self.state.flags.get("dead", False):
+            self.state.grade = self.compute_grade()
+            return
+
         self.state.t += self.tick_seconds
         self._refresh_process_flags()
+
+        # If cardiac arrest was already present and another time step passes
+        # without CPR, record death. A newly triggered arrest still leaves the
+        # learner one immediate next-operation opportunity.
+        f = self.state.flags
+        if f.get("cardiac_arrest", False) and not f.get("cpr_done", False):
+            arrest_t = f.get("cardiac_arrest_time_sec", self.state.t)
+            if self.state.t > arrest_t:
+                self._mark_death_after_arrest_without_cpr("time_elapsed_without_cpr")
+                self.state.grade = self.compute_grade()
+                return
 
         ctx = {
             "t": self.state.t,
@@ -224,6 +301,7 @@ class Simulator:
             except Exception as e:
                 self._log("system", "rule_eval_error", {"rule": rule.get("name", ""), "error": str(e)})
 
+        self._enforce_physiologic_vital_bounds()
         self._refresh_process_flags()
         self.state.grade = self.compute_grade()
 
@@ -497,6 +575,35 @@ class Simulator:
                 "SBP": self.state.vitals.get("SBP"),
             })
 
+    def _mark_death_after_arrest_without_cpr(self, attempted_action_id: str = "") -> None:
+        """Terminal event: cardiac arrest occurred and the next learner action was not CPR.
+
+        V1.2.6d rule: once the patient has entered cardiac arrest, the immediate
+        expected branch is CPR. If the next operation is anything other than CPR,
+        record death and stop the scenario.
+        """
+        f = self.state.flags
+        if f.get("dead", False) or f.get("resuscitation_rosc", False):
+            return
+        f["dead"] = True
+        f["death_event"] = True
+        f["death_after_arrest_without_cpr"] = True
+        f["cpr_omission_death"] = True
+        f["death_time_sec"] = self.state.t
+        f["death_reason"] = "cardiac_arrest_next_action_not_cpr"
+        f["outcome_class"] = "death_after_cardiac_arrest_without_cpr"
+        f["scenario_terminal_death"] = True
+        f["resuscitation_in_progress"] = False
+        self.state.vitals["SpO2"] = min(float(self.state.vitals.get("SpO2", 40)), 40.0)
+        self.state.vitals["SBP"] = min(float(self.state.vitals.get("SBP", 30)), 30.0)
+        self.state.vitals["DBP"] = min(float(self.state.vitals.get("DBP", 20)), 20.0)
+        self.state.symptoms["consciousness"] = 3
+        self._log("system", "death_after_arrest_without_cpr", {
+            "attempted_action_id": attempted_action_id,
+            "cardiac_arrest_time_sec": f.get("cardiac_arrest_time_sec", None),
+            "death_time_sec": self.state.t,
+        })
+
     def _update_resuscitation_status(self) -> None:
         """Update post-arrest resuscitation flags.
 
@@ -642,6 +749,24 @@ class Simulator:
         action = self._find_action(action_id)
         if not action:
             self._log("action", "unknown_action", {"action_id": action_id})
+            return
+
+        # V1.2.6d: after cardiac arrest, the immediate next action must be CPR.
+        # Any non-CPR action records a terminal death event.
+        if (
+            self.state.flags.get("cardiac_arrest", False)
+            and not self.state.flags.get("cpr_done", False)
+            and action_id != "cpr"
+        ):
+            self._first_attempt(action_id)
+            self._mark_death_after_arrest_without_cpr(action_id)
+            self.state.grade = self.compute_grade()
+            self._log("action", action_id, {
+                "label": action.get("label", ""),
+                "gained": 0,
+                "status": "death_after_arrest_without_cpr",
+                "result": "心肺骤停后未立即进行CPR，死亡事件已记录。"
+            })
             return
 
         # Custom actions whose score depends on prerequisites, not just first click.
@@ -861,6 +986,11 @@ class Simulator:
 
         self._first_attempt(action_id)
 
+        if self.state.flags.get("cardiac_arrest", False) and not self.state.flags.get("cpr_done", False):
+            self._mark_death_after_arrest_without_cpr(action_id)
+            self.state.grade = self.compute_grade()
+            return {"status": "death_after_arrest_without_cpr", "message": "心肺骤停后未立即进行CPR，死亡事件已记录。", "dose_mg": dose, "target_dose_mg": None}
+
         weight = float(self.state.weight_kg)
         target = round(min(0.01 * weight, 0.3), 3)
         max_single = 0.3
@@ -982,6 +1112,10 @@ class Simulator:
             return {"status": "error", "message": "未找到快速补液操作。"}
 
         self._first_attempt(action_id)
+        if self.state.flags.get("cardiac_arrest", False) and not self.state.flags.get("cpr_done", False):
+            self._mark_death_after_arrest_without_cpr(action_id)
+            self.state.grade = self.compute_grade()
+            return {"status": "death_after_arrest_without_cpr", "message": "心肺骤停后未立即进行CPR，死亡事件已记录。", "volume_ml": volume_ml}
         try:
             volume = float(volume_ml)
         except Exception:
@@ -1073,6 +1207,10 @@ class Simulator:
         if not action:
             return {"status": "error", "message": "未找到糖皮质激素操作。"}
         self._first_attempt(action_id)
+        if self.state.flags.get("cardiac_arrest", False) and not self.state.flags.get("cpr_done", False):
+            self._mark_death_after_arrest_without_cpr(action_id)
+            self.state.grade = self.compute_grade()
+            return {"status": "death_after_arrest_without_cpr", "message": "心肺骤停后未立即进行CPR，死亡事件已记录。", "dose_mg": dose_mg}
         try:
             dose = float(dose_mg)
         except Exception:
@@ -1111,7 +1249,10 @@ class Simulator:
 
         f["steroid_valid"] = bool(timing_valid and after_epi and dose_valid)
         if f["steroid_valid"]:
-            f["steroid_effect_ticks"] = 1
+            # Steroids are scored as an adjunct and dose-calculation item. They
+            # should not immediately lower HR/RR or raise BP/SpO2 like
+            # epinephrine, oxygen, ventilation, or crystalloid expansion.
+            f["steroid_effect_ticks"] = 0
             status = "valid"
             message = f"糖皮质激素剂量 {dose:.0f} mg 位于本例合理范围 {min_mg:.0f}–{max_mg:.0f} mg，且使用时机正确，计入标准路径。"
         elif not timing_valid:
@@ -1254,6 +1395,8 @@ class Simulator:
             issues.append("心肺复苏已启动但未进行球囊面罩通气支持")
         if f.get("cardiac_arrest", False) and not f.get("resuscitation_rosc", False) and f.get("cpr_done", False) and not f.get("advanced_support_contacted", False):
             issues.append("心肺复苏已启动但未联系高级生命支持")
+        if f.get("death_after_arrest_without_cpr", False):
+            issues.append("心肺骤停后下一步未选择CPR，已记录死亡事件")
         return issues
 
     def build_report(self) -> Dict[str, Any]:
@@ -1307,6 +1450,10 @@ class Simulator:
             "final_vitals_display": self._resuscitation_vitals_display(),
             "final_symptoms": self.state.symptoms,
             "outcome_class": f.get("outcome_class", ""),
+            "death_event": bool(f.get("death_event", False)),
+            "death_after_arrest_without_cpr": bool(f.get("death_after_arrest_without_cpr", False)),
+            "death_time_sec": f.get("death_time_sec", None),
+            "death_reason": f.get("death_reason", ""),
             "score": max(0, self.score - self.penalties),
             "raw_score": self.score,
             "penalties": self.penalties,
@@ -1328,6 +1475,7 @@ class Simulator:
                 "resuscitation_rosc": bool(f.get("resuscitation_rosc", False)),
                 "critical_resuscitated_transfer_picu": bool(f.get("critical_resuscitated_transfer_picu", False)),
                 "critical_transfer_picu": bool(f.get("critical_transfer_picu", False)),
+                "death_after_arrest_without_cpr": bool(f.get("death_after_arrest_without_cpr", False)),
                 "family_sbar_completed": bool(f.get("family_sbar_completed", False)),
                 "steroid_valid": bool(f.get("steroid_valid", False)),
                 "airway_obstruction_triggered": bool(f.get("airway_obstruction_triggered", False)),
