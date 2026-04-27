@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (V1.2.5 IV dual reassessment)
+Pediatric Ward Anaphylaxis Simulator (V1.2.6 steroid score + delayed deterioration + airway branch)
 
-特点（V1.2.5）：
+特点（V1.2.6）：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
 - 操作菜单：仅显示“操作名称”，不提供引导性措辞
 - 自动评分：时间窗 + 过程扣分（仅用于培训）
@@ -203,6 +203,7 @@ class Simulator:
 
     def tick(self) -> None:
         self.state.t += self.tick_seconds
+        self._refresh_process_flags()
 
         ctx = {
             "t": self.state.t,
@@ -223,6 +224,7 @@ class Simulator:
             except Exception as e:
                 self._log("system", "rule_eval_error", {"rule": rule.get("name", ""), "error": str(e)})
 
+        self._refresh_process_flags()
         self.state.grade = self.compute_grade()
 
 
@@ -298,6 +300,8 @@ class Simulator:
         s = self.state.symptoms
         f = self.state.flags
         symptom_text = []
+        if f.get("airway_obstruction_triggered", False):
+            symptom_text.append("气道梗阻风险/通气受限")
         if s.get("rash", 0) >= 1:
             symptom_text.append("皮疹/风团")
         if s.get("angioedema", 0) >= 1:
@@ -386,7 +390,72 @@ class Simulator:
         action = self._find_action(action_id)
         if action:
             self.apply_effects(action.get("effects", {}))
+            self._refresh_process_flags()
             self.state.grade = self.compute_grade()
+
+    def _core_steps_before_epinephrine_count(self) -> int:
+        f = self.state.flags
+        checks = [
+            bool(f.get("stopped_infusion", False) and f.get("iv_access", True)),
+            bool(f.get("help_called", False)),
+            "abc_assess" in self.action_first_time,
+            bool(f.get("oxygen_on", False)),
+            bool(f.get("positioned", False)),
+            bool(f.get("monitor_on", False)),
+            bool(f.get("bp_checked", False) or "check_bp" in self.action_first_time),
+        ]
+        return int(sum(checks))
+
+    def _refresh_process_flags(self) -> None:
+        """Refresh derived pathway flags used by dynamics and reports.
+
+        V1.2.6 uses a step-node trigger: deterioration before IM epinephrine
+        is intentionally slower while the learner is completing the first seven
+        basic actions, and accelerates when most core steps have been completed
+        or the action order has reached the epinephrine decision node without
+        effective IM epinephrine.
+        """
+        f = self.state.flags
+        core_count = self._core_steps_before_epinephrine_count()
+        f["pre_epi_core_steps_completed"] = core_count
+        f["operation_count"] = len(self.action_first_time)
+        if not f.get("epi_im_given", False):
+            delay_node = bool(
+                len(self.action_first_time) >= 8
+                or f.get("fluid_bolus_given", False)
+                or f.get("steroid_given", False)
+                or f.get("first_reassessment_done", False)
+            )
+            if delay_node:
+                f["epinephrine_delay_after_core_steps"] = True
+        # airway/BVM/ALS derived flags
+        if self._airway_obstruction_indicated():
+            f["airway_obstruction_triggered"] = True
+            f["advanced_support_indicated"] = True
+        if self._bvm_indicated():
+            f["bvm_required"] = True
+            f["advanced_support_indicated"] = True
+        if self._advanced_support_indicated():
+            f["advanced_support_indicated"] = True
+
+    def _airway_obstruction_indicated(self) -> bool:
+        v = self.state.vitals
+        s = self.state.symptoms
+        f = self.state.flags
+        return bool(
+            f.get("airway_obstruction_triggered", False)
+            or (f.get("airway_compromise", False) and (s.get("stridor", 0) >= 2 or v.get("SpO2", 100) < 88))
+            or (s.get("stridor", 0) >= 2 and v.get("SpO2", 100) < 92)
+        )
+
+    def _bvm_indicated(self) -> bool:
+        v = self.state.vitals
+        s = self.state.symptoms
+        f = self.state.flags
+        return bool(
+            f.get("bvm_required", False)
+            or (self._airway_obstruction_indicated() and (v.get("SpO2", 100) < 88 or s.get("consciousness", 0) >= 2 or v.get("RR", 30) < 10))
+        )
 
     def _is_unresolved_after_initial_support(self) -> bool:
         v = self.state.vitals
@@ -408,13 +477,14 @@ class Simulator:
     def _advanced_support_indicated(self) -> bool:
         v = self.state.vitals
         s = self.state.symptoms
-        if self.state.flags.get("cardiac_arrest", False):
+        f = self.state.flags
+        if f.get("cardiac_arrest", False) or f.get("bvm_required", False) or f.get("airway_obstruction_triggered", False):
             return True
         if v.get("SpO2", 100) < 90 or v.get("SBP", 999) < self.age_sbp_threshold():
             return True
         if s.get("stridor", 0) >= 2 or s.get("consciousness", 0) >= 2:
             return True
-        if self.state.flags.get("repeat_epi_given", False) and self._is_unresolved_after_initial_support():
+        if f.get("repeat_epi_given", False) and self._is_unresolved_after_initial_support():
             return True
         return False
 
@@ -486,6 +556,7 @@ class Simulator:
             self.apply_effects(action.get("effects", {}))
             if not self.state.flags.get("second_reassessment_done", False):
                 self.state.flags["family_before_second_reassess"] = True
+            self._refresh_process_flags()
             self._log("action", action_id, {
                 "label": action.get("label", ""),
                 "gained": 0,
@@ -507,6 +578,7 @@ class Simulator:
                 gained = 0
                 status = "conditional_not_met"
                 result = "已记录SBAR交接；需在第二次复评和家属告知后完成，才计入沟通交接得分。"
+            self._refresh_process_flags()
             self._log("action", action_id, {"label": action.get("label", ""), "gained": gained, "status": status, "result": result})
             return
 
@@ -536,6 +608,25 @@ class Simulator:
             })
             return
 
+        if action_id == "bvm_ventilation":
+            self._first_attempt(action_id)
+            indicated = self._bvm_indicated()
+            self.state.flags["bvm_done"] = True
+            self.state.flags["bvm_required"] = bool(indicated)
+            if indicated:
+                self.apply_effects(action.get("effects", {}))
+                self.state.flags["advanced_support_indicated"] = True
+                status = "indicated"
+                result = "已达到通气不足/严重气道梗阻条件，球囊面罩加压给氧作为危重分支处理已记录。"
+            else:
+                self.state.flags["bvm_not_indicated"] = True
+                status = "not_indicated"
+                result = "当前尚未达到球囊面罩加压给氧条件，本次记录为不适用操作。"
+            self._refresh_process_flags()
+            self.state.grade = self.compute_grade()
+            self._log("action", action_id, {"label": action.get("label", ""), "gained": 0, "status": status, "result": result})
+            return
+
         if action_id == "nebulized_epinephrine":
             first_time = self._first_attempt(action_id)
             has_upper_airway = self.state.symptoms.get("stridor", 0) >= 1 or self.state.flags.get("airway_compromise", False)
@@ -556,7 +647,7 @@ class Simulator:
             self._log("action", action_id, {"label": action.get("label", ""), "gained": 0, "status": status, "result": result})
             return
 
-        if action_id in ("repeat_epinephrine", "im_epinephrine", "fluid_bolus"):
+        if action_id in ("repeat_epinephrine", "im_epinephrine", "fluid_bolus", "steroid"):
             # In the web UI these require a dose/volume panel. Direct CLI use only records the attempt.
             self._first_attempt(action_id)
             self._log("action", action_id, {
@@ -585,6 +676,7 @@ class Simulator:
                 self._log("action", "penalty", {"action_id": action_id, "penalty": p, "reason": f"used_before_{flag_name}"})
 
         self.apply_effects(action.get("effects", {}))
+        self._refresh_process_flags()
         self.state.grade = self.compute_grade()
         self._log("action", action_id, {"label": action.get("label", ""), "gained": gained, "t": self.state.t})
 
@@ -811,6 +903,93 @@ class Simulator:
             "max_ml": max_ml,
         }
 
+    def apply_steroid_dose(self, dose_mg: float) -> Dict[str, Any]:
+        """Apply glucocorticoid after dose verification.
+
+        V1.2.6 default standardizes the scored steroid option as IV
+        methylprednisolone: 1-2 mg/kg, single maximum 40 mg.
+        Steroid is a scored adjunct only after effective IM epinephrine and
+        rapid fluid expansion; it must not replace first-line epinephrine.
+        """
+        action_id = "steroid"
+        action = self._find_action(action_id)
+        if not action:
+            return {"status": "error", "message": "未找到糖皮质激素操作。"}
+        self._first_attempt(action_id)
+        try:
+            dose = float(dose_mg)
+        except Exception:
+            dose = 0.0
+
+        weight = float(self.state.weight_kg)
+        min_mg = round(1.0 * weight, 1)
+        max_mg = round(min(2.0 * weight, 40.0), 1)
+        f = self.state.flags
+        f["steroid_given"] = True
+        f["steroid_dose_checked"] = True
+        f["steroid_dose_mg"] = round(dose, 1)
+        f["steroid_min_mg"] = min_mg
+        f["steroid_max_mg"] = max_mg
+
+        timing_valid = bool(f.get("fluid_bolus_valid", False))
+        after_epi = bool(f.get("epi_im_given", False))
+        dose_valid = bool(min_mg <= dose <= max_mg)
+        f["steroid_timing_valid"] = timing_valid
+        if not timing_valid:
+            f["steroid_before_fluid"] = True
+        if not after_epi:
+            f["steroid_without_epi"] = True
+        if dose < min_mg:
+            f["steroid_under"] = True
+        if dose > max_mg:
+            f["steroid_over"] = True
+
+        gained = 0
+        if timing_valid:
+            gained += self._award_points_once("steroid_timing", 2)
+        if after_epi:
+            gained += self._award_points_once("steroid_after_epi", 1)
+        if dose_valid:
+            gained += self._award_points_once("steroid_dose", 2)
+
+        f["steroid_valid"] = bool(timing_valid and after_epi and dose_valid)
+        if f["steroid_valid"]:
+            f["steroid_effect_ticks"] = 1
+            status = "valid"
+            message = f"糖皮质激素剂量 {dose:.0f} mg 位于本例合理范围 {min_mg:.0f}–{max_mg:.0f} mg，且使用时机正确，计入标准路径。"
+        elif not timing_valid:
+            status = "timing_error"
+            message = "已记录糖皮质激素，但必须在有效快速扩容后使用；本次不能作为完整标准路径。"
+        elif not after_epi:
+            status = "used_before_first_line"
+            message = "已记录糖皮质激素，但未先完成有效肌注肾上腺素，不能替代一线急救治疗。"
+        elif dose < min_mg:
+            status = "under"
+            message = f"糖皮质激素剂量 {dose:.0f} mg 低于本例合理范围下限 {min_mg:.0f} mg。"
+        else:
+            status = "over"
+            message = f"糖皮质激素剂量 {dose:.0f} mg 超过本例合理范围上限 {max_mg:.0f} mg。"
+
+        self._log("action", "steroid_dose_verified" if f["steroid_valid"] else "steroid_dose_issue", {
+            "dose_mg": round(dose, 1),
+            "min_mg": min_mg,
+            "max_mg": max_mg,
+            "timing_valid": timing_valid,
+            "after_epinephrine": after_epi,
+            "dose_valid": dose_valid,
+            "gained": gained,
+            "status": status,
+        })
+        self._refresh_process_flags()
+        self.state.grade = self.compute_grade()
+        return {
+            "status": status,
+            "message": message,
+            "dose_mg": dose,
+            "min_mg": min_mg,
+            "max_mg": max_mg,
+        }
+
     def is_done(self) -> Tuple[bool, str]:
         ctx = {
             "t": self.state.t,
@@ -879,6 +1058,20 @@ class Simulator:
             issues.append("未完成有效第一次复评")
         if not f.get("bronchodilator_neb", False):
             issues.append("持续咳嗽/喘息时未进行雾化支扩")
+        if not f.get("steroid_valid", False):
+            issues.append("未完成符合时机和剂量要求的糖皮质激素辅助治疗")
+        if f.get("steroid_before_fluid", False):
+            issues.append("糖皮质激素使用早于有效快速扩容")
+        if f.get("steroid_without_epi", False):
+            issues.append("糖皮质激素不能替代一线肌注肾上腺素")
+        if f.get("steroid_under", False):
+            issues.append("糖皮质激素剂量不足")
+        if f.get("steroid_over", False):
+            issues.append("糖皮质激素剂量超过建议范围")
+        if f.get("airway_obstruction_triggered", False) and not f.get("advanced_support_contacted", False):
+            issues.append("出现气道梗阻/严重低氧风险但未联系高级支持")
+        if f.get("bvm_required", False) and not f.get("bvm_done", False):
+            issues.append("达到球囊面罩加压给氧条件但未执行")
         if not f.get("second_reassessment_done", False):
             issues.append("未完成告知家属前第二次复评")
         if f.get("family_before_second_reassess", False):
@@ -963,6 +1156,12 @@ class Simulator:
                 "cpr_indicated": bool(f.get("cpr_indicated", False)),
                 "cpr_done": bool(f.get("cpr_done", False)),
                 "family_sbar_completed": bool(f.get("family_sbar_completed", False)),
+                "steroid_valid": bool(f.get("steroid_valid", False)),
+                "airway_obstruction_triggered": bool(f.get("airway_obstruction_triggered", False)),
+                "bvm_required": bool(f.get("bvm_required", False)),
+                "bvm_done": bool(f.get("bvm_done", False)),
+                "epinephrine_delay_after_core_steps": bool(f.get("epinephrine_delay_after_core_steps", False)),
+                "pre_epi_core_steps_completed": int(f.get("pre_epi_core_steps_completed", 0)),
             },
             "key_timeline": {
                 "stop_infusion": t_of("stop_infusion"),
@@ -986,10 +1185,19 @@ class Simulator:
                 "second_reassessment": t_of("reassess_second"),
                 "reassess_count": int(f.get("reassess_count", 0)),
                 "bronchodilator": t_of("bronchodilator"),
+                "steroid": t_of("steroid"),
+                "steroid_dose_mg": f.get("steroid_dose_mg", None),
+                "steroid_min_mg": f.get("steroid_min_mg", None),
+                "steroid_max_mg": f.get("steroid_max_mg", None),
+                "steroid_valid": bool(f.get("steroid_valid", False)),
                 "nebulized_epinephrine": t_of("nebulized_epinephrine"),
                 "repeat_epinephrine": t_of("repeat_epinephrine"),
                 "advanced_support": t_of("advanced_support"),
+                "bvm_ventilation": t_of("bvm_ventilation"),
                 "cpr": t_of("cpr"),
+                "epinephrine_delay_after_core_steps": bool(f.get("epinephrine_delay_after_core_steps", False)),
+                "airway_obstruction_triggered": bool(f.get("airway_obstruction_triggered", False)),
+                "bvm_required": bool(f.get("bvm_required", False)),
                 "family_communication": t_of("family_explain"),
                 "sbar_handoff": t_of("sbar_handoff"),
                 "im_epinephrine_dose_verified_time": first_log_time("im_epinephrine_dose_verified"),

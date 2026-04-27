@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.5 IV dual-reassessment candidate
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.6 steroid-score delayed-deterioration airway-branch candidate
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -8,9 +8,9 @@
 - 右侧操作按钮统一使用简洁短标题，不再显示冗余解释；
 - 当生命体征、临床表现或分级发生变化时，相关卡片自动闪动提示；
 - 训练模式保留步骤提示与原因说明；考试模式仅保留干净操作界面；
-- 肌注肾上腺素需输入剂量，系统按体重核对 0.01 mg/kg 与 0.5 mg 上限。
+- 肌注肾上腺素需输入剂量，系统按体重核对 0.01 mg/kg 与 0.3 mg 上限。
 - 每次开始/重置模拟时自动随机生成年龄与体重：年龄 2-11 岁，体重 10-35 kg。
-- 按用户确认的14项评分细则校准最佳时间窗：总分20分。
+- 按用户确认的15步路径校准评分与动态演化：总分25分。
 - V1.0新增：访问码、单位/科室/参与者编号、自动保存结果、管理员导出CSV、操作历史即时显示。
 - V1.1新增：接入Supabase云端数据库，训练结束后自动写入training_records表，管理员后台可从数据库读取并导出。
 - V1.1.1新增：管理员后台增强导出：汇总CSV、操作明细CSV、完整JSONL；关键操作时间点和剂量/错误指标展开为独立字段。
@@ -18,6 +18,7 @@
 - V1.1.3新增：登记界面按院区/科室标准化下拉录入，按院区代码+科室代码+姓名首字母自动生成参与者编号；删除前台项目编号和第几次测试字段；评估阶段标准化为基线评估、模拟培训、培训后考核。
 - V1.1.4新增：按评估阶段自动锁定流程；基线评估=考试模式+初始病例，模拟培训=训练模式+初始病例，培训后考核=考试模式+变体病例Variant A；受试者不再自行选择运行模式和病例脚本。
 - V1.2.5新增：输液场景双复评逻辑、儿童肾上腺素0.3 mg上限、快速补液容量输入、再次肌注/高级支持/CPR/雾化肾上腺素条件性路径。
+- V1.2.6新增：总分升至25分；删除抗组胺药按钮；糖皮质激素纳入5分并需输入剂量；未及时肌注肾上腺素改为第8关键节点后加速恶化；新增气道梗阻/球囊加压给氧条件性分支。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -48,7 +49,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.5 IV-dual-reassessment-candidate"
+APP_VERSION = "V1.2.6 steroid-score delayed-deterioration airway-branch candidate"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -242,6 +243,8 @@ def init_session() -> None:
         "pending_dose_action_label": "",
         "pending_volume_action_id": "",
         "pending_volume_action_label": "",
+        "pending_steroid_action_id": "",
+        "pending_steroid_action_label": "",
         "last_dose_feedback": "",
         "last_dose_feedback_level": "",
         "result_saved": False,
@@ -705,6 +708,8 @@ ACTION_LABELS_CN = {
     "cpr": "CPR",
     "antihistamine_iv": "抗组胺药",
     "steroid": "糖皮质激素",
+    "steroid_dose_verified": "糖皮质激素剂量确认",
+    "steroid_dose_issue": "糖皮质激素剂量/时机问题",
     "continue_infusion": "继续输注可疑药物",
     "remove_iv": "拔除静脉通路",
     "sedation": "镇静药",
@@ -864,6 +869,15 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
         "fluid_min_ml": timeline.get("fluid_min_ml", ""),
         "fluid_max_ml": timeline.get("fluid_max_ml", ""),
         "fluid_bolus_valid": _yes_no(bool(timeline.get("fluid_bolus_valid", False))),
+        "steroid_time": timeline.get("steroid", ""),
+        "steroid_dose_mg": timeline.get("steroid_dose_mg", ""),
+        "steroid_min_mg": timeline.get("steroid_min_mg", ""),
+        "steroid_max_mg": timeline.get("steroid_max_mg", ""),
+        "steroid_valid": _yes_no(bool(timeline.get("steroid_valid", False))),
+        "epinephrine_delay_after_core_steps": _yes_no(bool(timeline.get("epinephrine_delay_after_core_steps", False))),
+        "airway_obstruction_triggered": _yes_no(bool(timeline.get("airway_obstruction_triggered", False))),
+        "bvm_required": _yes_no(bool(timeline.get("bvm_required", False))),
+        "bvm_ventilation_time": timeline.get("bvm_ventilation", ""),
         "repeat_epinephrine_time": timeline.get("repeat_epinephrine", ""),
         "advanced_support_time": timeline.get("advanced_support", ""),
         "cpr_time": timeline.get("cpr", ""),
@@ -920,7 +934,7 @@ def report_to_action_detail_records(report: Dict[str, Any], storage_source: str 
         if msg == "penalty":
             action_name = ACTION_LABELS_CN.get(action_id, action_id)
             event_type = "扣分"
-        elif msg in ["im_epinephrine_dose_verified", "im_epinephrine_underdose", "im_epinephrine_dose_high", "im_epinephrine_overdose", "fluid_bolus_volume_verified", "fluid_bolus_under", "fluid_bolus_over", "fluid_bolus_invalid_no_iv"]:
+        elif msg in ["im_epinephrine_dose_verified", "im_epinephrine_underdose", "im_epinephrine_dose_high", "im_epinephrine_overdose", "fluid_bolus_volume_verified", "fluid_bolus_under", "fluid_bolus_over", "fluid_bolus_invalid_no_iv", "steroid_dose_verified", "steroid_dose_issue"]:
             action_name = ACTION_LABELS_CN.get(msg, msg)
             event_type = "剂量判定"
         else:
@@ -1026,6 +1040,10 @@ def start_simulation(scenario_path: Path, mode: str, seed: int, participant_id: 
     st.session_state.last_ui_snapshot = None
     st.session_state.pending_dose_action_id = ""
     st.session_state.pending_dose_action_label = ""
+    st.session_state.pending_volume_action_id = ""
+    st.session_state.pending_volume_action_label = ""
+    st.session_state.pending_steroid_action_id = ""
+    st.session_state.pending_steroid_action_label = ""
     st.session_state.last_dose_feedback = ""
     st.session_state.last_dose_feedback_level = ""
     st.session_state.result_saved = False
@@ -1238,7 +1256,7 @@ def render_participant_entry_page() -> None:
                 st.rerun()
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.2.5 控制台")
+    st.sidebar.title("V1.2.6 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1898,9 +1916,9 @@ def render_intro() -> None:
     with right:
         st.container(border=True).markdown(
             """
-            **V1.2.5 输液场景双复评定版候选**
+            **V1.2.6 糖皮质激素计分与气道分支候选版**
 
-            本版在流程锁定基础上，加入输液场景双复评、快速补液容量输入、儿童肾上腺素0.3 mg上限及特殊路径条件性记录。系统按院区、科室和姓名首字母自动生成匿名参与者编号，并在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
+            本版在流程锁定基础上，采用25分标准路径：加入糖皮质激素剂量输入与计分，删除抗组胺药按钮，并将气道梗阻、球囊面罩加压给氧、高级支持、CPR作为条件性危重分支单独记录。系统按院区、科室和姓名首字母自动生成匿名参与者编号，并在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
 
             管理员后台仍支持三类导出：训练汇总CSV、操作明细CSV、完整JSONL。
             """
@@ -1967,7 +1985,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.2.5 研究质控与导出增强版")
+    st.markdown("### 管理员后台｜V1.2.6 研究质控与导出增强版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -2193,6 +2211,53 @@ def render_fluid_bolus_panel(sim: Simulator) -> bool:
 
 
 
+def render_steroid_dose_panel(sim: Simulator) -> bool:
+    """Render dose-confirmation panel for glucocorticoid adjunct therapy."""
+    pending_id = st.session_state.get("pending_steroid_action_id", "")
+    if pending_id != "steroid":
+        return False
+
+    weight = float(getattr(sim.state, "weight_kg", 0) or 0)
+    min_mg = round(1.0 * weight, 1)
+    max_mg = round(min(2.0 * weight, 40.0), 1)
+    st.markdown(
+        "<div class='dose-card'>"
+        "<div class='title'>糖皮质激素：请输入甲泼尼龙剂量</div>"
+        "<div class='text'>单位为 mg。确认后系统会判断使用时机与剂量是否符合标准路径。</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    if sim.mode == "coach":
+        st.caption(f"训练提示：本例体重 {weight:g} kg；甲泼尼龙参考范围 {min_mg:g}–{max_mg:g} mg（1–2 mg/kg，单次最大40 mg）。必须在有效快速扩容后使用。")
+
+    steroid_key = f"steroid_dose_mg_{st.session_state.session_id}_{sim.state.t}"
+    dose_mg = st.number_input(
+        "本次甲泼尼龙剂量（mg）",
+        min_value=0.0,
+        max_value=500.0,
+        value=0.0,
+        step=5.0,
+        format="%.0f",
+        key=steroid_key,
+    )
+    c_ok, c_cancel = st.columns([1, 1], gap="medium")
+    if c_ok.button("确认剂量并执行", type="primary", use_container_width=True):
+        result = sim.apply_steroid_dose(float(dose_mg))
+        st.session_state.last_dose_feedback = str(result.get("message", ""))
+        st.session_state.last_dose_feedback_level = str(result.get("status", ""))
+        st.session_state.pending_steroid_action_id = ""
+        st.session_state.pending_steroid_action_label = ""
+        sim.tick()
+        finalize_if_done()
+        st.rerun()
+    if c_cancel.button("取消输入", use_container_width=True):
+        st.session_state.pending_steroid_action_id = ""
+        st.session_state.pending_steroid_action_label = ""
+        st.rerun()
+    return True
+
+
+
 def render_simulation() -> None:
     sim: Simulator = st.session_state.active_simulator
     scenario: Dict[str, Any] = st.session_state.active_scenario
@@ -2247,13 +2312,14 @@ def render_simulation() -> None:
                     st.success(msg)
                 elif level in ["overdose", "invalid", "over"]:
                     st.error(msg)
-                elif level in ["underdose", "dose_high", "under", "not_indicated"]:
+                elif level in ["underdose", "dose_high", "under", "not_indicated", "timing_error", "used_before_first_line"]:
                     st.warning(msg)
                 else:
                     st.info(msg)
 
             dose_pending = render_epinephrine_dose_panel(sim)
             volume_pending = render_fluid_bolus_panel(sim)
+            steroid_pending = render_steroid_dose_panel(sim)
 
             actions = sim.actions
             option_cols = 4
@@ -2269,7 +2335,7 @@ def render_simulation() -> None:
                             button_text,
                             key=f"action_{aid}_{sim.state.t}_{idx}_{local_index}",
                             use_container_width=True,
-                            disabled=(dose_pending or volume_pending),
+                            disabled=(dose_pending or volume_pending or steroid_pending),
                         ):
                             st.session_state.last_dose_feedback = ""
                             st.session_state.last_dose_feedback_level = ""
@@ -2280,6 +2346,10 @@ def render_simulation() -> None:
                             elif aid == "fluid_bolus":
                                 st.session_state.pending_volume_action_id = aid
                                 st.session_state.pending_volume_action_label = full_label
+                                st.rerun()
+                            elif aid == "steroid":
+                                st.session_state.pending_steroid_action_id = aid
+                                st.session_state.pending_steroid_action_label = full_label
                                 st.rerun()
                             else:
                                 sim.apply_action(aid)
