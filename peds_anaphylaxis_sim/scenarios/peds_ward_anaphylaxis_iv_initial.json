@@ -4,8 +4,8 @@
     "id": "peds_ward_anaphylaxis_iv_initial",
     "title": "儿科药物诱发过敏反应动态分支仿真｜初始版",
     "language": "zh-CN",
-    "version": "1.2.8.2-web-v0.8.2-user-scoring-table",
-    "source_note": "基于《中国小儿急救医学 2024;31(7)》“儿童严重过敏反应的早期识别与快速处理”要点抽取，供教学模拟使用。",
+    "version": "1.2.1-guideline-aligned-2025-consensus",
+    "source_note": "基于2025年《严重过敏反应诊断和临床管理专家共识》初始治疗流程、临床表现和儿童肾上腺素剂量规则修订，供护理教学与科研模拟使用。",
     "mode_defaults": {
       "coach": true,
       "tick_seconds": 30
@@ -13,7 +13,7 @@
     "script_role": "initial",
     "script_name": "initial",
     "display_name": "初始版",
-    "scoring_basis": "User-confirmed 14-item scoring table: 20 points; action windows calibrated to 30-s tick progression."
+    "scoring_basis": "2025中国严重过敏反应专家共识对齐版：临床表现按病情进展分级，抢救操作加入步骤规划限制，儿童肌注肾上腺素上限按0.3 mg处理。"
   },
   "patient": {
     "age_years": 3,
@@ -38,7 +38,7 @@
     "IV": "心跳或呼吸骤停"
   },
   "baseline": {
-    "time_zero_description": "儿科病区，患儿输液过程中出现不适与皮肤表现（如潮红/风团/瘙痒），伴咳嗽或呼吸不畅，哭闹/烦躁。请根据当前临床表现与可获得的数据进行处置。",
+    "time_zero_description": "儿科普通病区，患儿静脉输注药物后数分钟出现皮肤瘙痒/风团样皮疹、潮红，伴咳嗽、烦躁或诉喉部不适。请根据病情进展、生命体征和可获得信息进行处置。",
     "vitals": {
       "SpO2": 98,
       "HR": 125,
@@ -53,7 +53,12 @@
       "wheeze": 0,
       "stridor": 0,
       "gi": 0,
-      "consciousness": 0
+      "consciousness": 0,
+      "cough": 1,
+      "throat_tightness": 0,
+      "vomiting": 0,
+      "poor_perfusion": 0,
+      "cyanosis": 0
     },
     "flags": {
       "infusion_running": true,
@@ -87,7 +92,15 @@
       "epi_im_attempts": 0,
       "epi_last_dose_mg": 0.0,
       "epi_target_dose_mg": 0.0,
-      "dead": false
+      "dead": false,
+      "abc_assessed": false,
+      "airway_opened": false,
+      "steroid_given": false,
+      "repeat_epi_given": false,
+      "advanced_support_called": false,
+      "observation_plan": false,
+      "epi_excess_dose_event": false,
+      "reassessed_after_epi": false
     }
   },
   "thresholds": {
@@ -100,7 +113,7 @@
   "actions": [
     {
       "id": "stop_infusion",
-      "label": "停止输液/停药",
+      "label": "停用可疑药物/停止可疑输液（保留抢救通路）",
       "category": "critical",
       "score": {
         "points": 2,
@@ -109,13 +122,15 @@
       "effects": {
         "set_flags": {
           "stopped_infusion": true,
-          "infusion_running": false
+          "infusion_running": false,
+          "iv_access": true,
+          "iv_confirmed": true
         }
       }
     },
     {
       "id": "call_help",
-      "label": "呼救",
+      "label": "呼救并启动院内抢救支援",
       "category": "critical",
       "score": {
         "points": 2,
@@ -128,16 +143,35 @@
       }
     },
     {
-      "id": "high_flow_oxygen",
-      "label": "给氧",
-      "category": "critical",
+      "id": "abc_assess",
+      "label": "快速ABC评估（气道/呼吸/循环）",
+      "category": "assessment",
       "score": {
-        "points": 2,
+        "points": 1,
         "time_window_seconds": 120
       },
       "effects": {
         "set_flags": {
-          "oxygen_on": true
+          "abc_assessed": true
+        }
+      }
+    },
+    {
+      "id": "high_flow_oxygen",
+      "label": "保持气道通畅并给氧",
+      "category": "critical",
+      "availability": {
+        "when": "flags.help_called or flags.abc_assessed",
+        "reason": "应先呼救或完成ABC快速判断后立即给氧。"
+      },
+      "score": {
+        "points": 2,
+        "time_window_seconds": 150
+      },
+      "effects": {
+        "set_flags": {
+          "oxygen_on": true,
+          "airway_opened": true
         },
         "delta_vitals": {
           "SpO2": 4
@@ -146,11 +180,15 @@
     },
     {
       "id": "shock_position",
-      "label": "体位管理",
+      "label": "平卧/抬高下肢，意识障碍头偏向一侧",
       "category": "support",
+      "availability": {
+        "when": "flags.stopped_infusion or flags.help_called",
+        "reason": "体位管理应在去除可疑诱因或启动支援后尽早完成。"
+      },
       "score": {
         "points": 1,
-        "time_window_seconds": 300
+        "time_window_seconds": 240
       },
       "effects": {
         "set_flags": {
@@ -163,22 +201,16 @@
       }
     },
     {
-      "id": "abc_assess",
-      "label": "ABC评估",
-      "category": "assessment",
+      "id": "connect_monitor",
+      "label": "连接心电/SpO₂监护",
+      "category": "critical",
+      "availability": {
+        "when": "flags.help_called",
+        "reason": "启动支援后应连接连续监护，便于判断病情进展。"
+      },
       "score": {
         "points": 1,
         "time_window_seconds": 240
-      },
-      "effects": {}
-    },
-    {
-      "id": "connect_monitor",
-      "label": "连接监护",
-      "category": "critical",
-      "score": {
-        "points": 1,
-        "time_window_seconds": 120
       },
       "effects": {
         "set_flags": {
@@ -188,11 +220,15 @@
     },
     {
       "id": "check_bp",
-      "label": "测血压/灌注",
+      "label": "测血压并评估末梢灌注",
       "category": "critical",
+      "availability": {
+        "when": "flags.monitor_on or flags.help_called",
+        "reason": "血压/灌注评估应与监护或抢救支援同步进行。"
+      },
       "score": {
         "points": 1,
-        "time_window_seconds": 180
+        "time_window_seconds": 300
       },
       "effects": {
         "set_flags": {
@@ -202,43 +238,72 @@
     },
     {
       "id": "im_epinephrine",
-      "label": "肌注肾上腺素",
+      "label": "肌注肾上腺素（需输入剂量）",
       "category": "critical_med",
+      "availability": {
+        "when": "flags.stopped_infusion and flags.help_called and (grade >= 2 or symptoms.wheeze >= 1 or symptoms.stridor >= 1 or vitals.SBP < age_sbp_threshold + 15)",
+        "reason": "符合或高度疑似严重过敏反应后，应在停用可疑药物并呼救后尽早肌注肾上腺素。"
+      },
       "score": {
-        "points": 3,
+        "points": 4,
         "time_window_seconds": 180
       },
       "effects": {
         "set_flags": {
           "epi_im_given": true,
-          "epi_effect_ticks": 6
+          "epi_effect_ticks": 4
         },
         "counter_inc": {
           "epi_im_doses": 1
         },
         "delta_vitals": {
-          "SBP": 12,
-          "DBP": 6,
-          "HR": -8,
-          "SpO2": 4,
-          "RR": -4
+          "SBP": 10,
+          "DBP": 5,
+          "HR": -6,
+          "SpO2": 3,
+          "RR": -3
         },
         "delta_symptoms": {
-          "wheeze": -2,
-          "stridor": -2,
+          "wheeze": -1,
+          "stridor": -1,
           "rash": -1,
           "angioedema": -1,
-          "consciousness": -1
+          "throat_tightness": -1,
+          "consciousness": -1,
+          "poor_perfusion": -1
+        }
+      }
+    },
+    {
+      "id": "confirm_iv_access",
+      "label": "确认/建立静脉通路",
+      "category": "support",
+      "availability": {
+        "when": "flags.help_called",
+        "reason": "启动抢救后应确认或建立静脉通路，用于补液和后续抢救。"
+      },
+      "score": {
+        "points": 1,
+        "time_window_seconds": 300
+      },
+      "effects": {
+        "set_flags": {
+          "iv_access": true,
+          "iv_confirmed": true
         }
       }
     },
     {
       "id": "fluid_bolus",
-      "label": "静脉补液",
+      "label": "晶体液快速补液10–20 ml/kg",
       "category": "support_med",
+      "availability": {
+        "when": "flags.iv_access and flags.bp_checked and flags.epi_im_given",
+        "reason": "确认静脉通路和血压/灌注后，可根据循环状态准备或实施晶体液快速补液。"
+      },
       "score": {
-        "points": 2,
-        "time_window_seconds": 240
+        "points": 1,
+        "time_window_seconds": 420
       },
       "effects": {
         "set_flags": {
@@ -249,37 +314,23 @@
           "SBP": 10,
           "DBP": 5,
           "HR": -3
-        }
-      }
-    },
-    {
-      "id": "nebulized_epinephrine",
-      "label": "雾化肾上腺素",
-      "category": "support_med",
-      "score": {
-        "points": 1,
-        "time_window_seconds": 360
-      },
-      "effects": {
-        "set_flags": {
-          "nebulized_epi": true,
-          "neb_epi_effect_ticks": 2
         },
         "delta_symptoms": {
-          "stridor": -1
-        },
-        "delta_vitals": {
-          "SpO2": 1
+          "poor_perfusion": -1
         }
       }
     },
     {
       "id": "bronchodilator",
-      "label": "雾化支气管扩张剂",
+      "label": "喘息/支气管痉挛时雾化支气管扩张剂",
       "category": "support_med",
+      "availability": {
+        "when": "flags.epi_im_given",
+        "reason": "雾化支气管扩张剂为辅助处理，应在肌注肾上腺素后根据喘息/支气管痉挛情况使用。"
+      },
       "score": {
         "points": 1,
-        "time_window_seconds": 360
+        "time_window_seconds": 480
       },
       "effects": {
         "set_flags": {
@@ -295,9 +346,79 @@
       }
     },
     {
+      "id": "nebulized_epinephrine",
+      "label": "喉鸣/上气道水肿时雾化肾上腺素（辅助）",
+      "category": "support_med_conditional",
+      "availability": {
+        "when": "flags.epi_im_given and symptoms.stridor >= 1",
+        "reason": "雾化肾上腺素仅作为上气道受累辅助处理，不能替代肌注肾上腺素。"
+      },
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "nebulized_epi": true,
+          "neb_epi_effect_ticks": 2
+        },
+        "delta_symptoms": {
+          "stridor": -1,
+          "throat_tightness": -1
+        },
+        "delta_vitals": {
+          "SpO2": 1
+        }
+      }
+    },
+    {
+      "id": "antihistamine_iv",
+      "label": "抗组胺药（辅助，不能替代肾上腺素）",
+      "category": "non_firstline",
+      "availability": {
+        "when": "flags.epi_im_given",
+        "reason": "抗组胺药为辅助治疗，不能先于或替代肌注肾上腺素。"
+      },
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999,
+        "penalty_if_before": "epi_im_given",
+        "penalty_points": 2
+      },
+      "effects": {
+        "delta_symptoms": {
+          "rash": -1
+        }
+      }
+    },
+    {
+      "id": "steroid",
+      "label": "糖皮质激素（辅助，不能替代肾上腺素）",
+      "category": "non_firstline",
+      "availability": {
+        "when": "flags.epi_im_given",
+        "reason": "糖皮质激素为二线/辅助治疗，不能替代首选肌注肾上腺素。"
+      },
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999,
+        "penalty_if_before": "epi_im_given",
+        "penalty_points": 2
+      },
+      "effects": {
+        "set_flags": {
+          "steroid_given": true
+        }
+      }
+    },
+    {
       "id": "reassess",
-      "label": "复评记录",
+      "label": "5–15 min复评并记录",
       "category": "process",
+      "availability": {
+        "when": "flags.epi_im_given or t >= 180",
+        "reason": "复评应在关键处置后进行，重点记录呼吸、循环、意识和皮肤黏膜变化。"
+      },
       "score": {
         "points": 1,
         "time_window_seconds": 600
@@ -305,13 +426,73 @@
       "effects": {
         "counter_inc": {
           "reassess_count": 1
+        },
+        "set_flags": {
+          "reassessed_after_epi": true
+        }
+      }
+    },
+    {
+      "id": "repeat_im_epinephrine",
+      "label": "复评仍未缓解：再次肌注肾上腺素",
+      "category": "critical_med_repeat",
+      "availability": {
+        "when": "flags.epi_im_given and flags.reassess_count >= 1 and (t - action_first_time.get('im_epinephrine', 999999)) >= 300 and (grade >= 2 or symptoms.wheeze >= 1 or symptoms.stridor >= 1 or vitals.SBP < age_sbp_threshold)",
+        "reason": "首次肌注后5–15 min复评仍未缓解时，才考虑重复肌注肾上腺素。"
+      },
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "repeat_epi_given": true,
+          "epi_effect_ticks": 3
+        },
+        "counter_inc": {
+          "epi_im_doses": 1
+        },
+        "delta_vitals": {
+          "SBP": 8,
+          "DBP": 4,
+          "HR": -5,
+          "SpO2": 2,
+          "RR": -2
+        },
+        "delta_symptoms": {
+          "wheeze": -1,
+          "stridor": -1,
+          "consciousness": -1,
+          "poor_perfusion": -1
+        }
+      }
+    },
+    {
+      "id": "call_icu_team",
+      "label": "两次肾上腺素/补液仍无缓解：联系急诊/PICU/ICU",
+      "category": "escalation",
+      "availability": {
+        "when": "flags.epi_im_doses >= 2 and (flags.fluid_bolus_given or grade >= 3)",
+        "reason": "两次肾上腺素及补液后仍无缓解，应升级至高级生命支持团队。"
+      },
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "advanced_support_called": true
         }
       }
     },
     {
       "id": "family_explain",
-      "label": "家属沟通",
+      "label": "简短告知家属当前抢救与转运安排",
       "category": "crm",
+      "availability": {
+        "when": "flags.help_called",
+        "reason": "家属沟通应在抢救团队启动后简短进行，避免影响关键抢救。"
+      },
       "score": {
         "points": 1,
         "time_window_seconds": 600
@@ -324,56 +505,34 @@
     },
     {
       "id": "sbar_handoff",
-      "label": "SBAR交接",
+      "label": "SBAR交接与后续观察安排",
       "category": "crm",
+      "availability": {
+        "when": "flags.reassess_count >= 2 and grade <= 2",
+        "reason": "完成连续复评并初步稳定后，再进行SBAR交接和观察安排。"
+      },
       "score": {
         "points": 1,
         "time_window_seconds": 99999
       },
       "effects": {
         "set_flags": {
-          "sbar_handoff": true
+          "sbar_handoff": true,
+          "observation_plan": true
         }
       }
-    },
-    {
-      "id": "antihistamine_iv",
-      "label": "静脉抗组胺药",
-      "category": "non_firstline",
-      "score": {
-        "points": 0,
-        "time_window_seconds": 99999,
-        "penalty_if_before": "epi_im_given",
-        "penalty_points": 1
-      },
-      "effects": {
-        "delta_vitals": {
-          "SBP": -3
-        }
-      }
-    },
-    {
-      "id": "steroid",
-      "label": "糖皮质激素",
-      "category": "non_firstline",
-      "score": {
-        "points": 0,
-        "time_window_seconds": 99999,
-        "penalty_if_before": "epi_im_given",
-        "penalty_points": 1
-      },
-      "effects": {}
     },
     {
       "id": "continue_infusion",
-      "label": "继续输液",
+      "label": "继续输入可疑药物",
       "category": "distractor",
       "effects": {
         "set_flags": {
-          "stopped_infusion": false
+          "stopped_infusion": false,
+          "infusion_running": true
         },
         "delta_vitals": {
-          "SpO2": -3,
+          "SpO2": -4,
           "SBP": -10,
           "DBP": -5,
           "HR": 8,
@@ -381,12 +540,34 @@
         },
         "delta_symptoms": {
           "wheeze": 1,
-          "stridor": 1
+          "stridor": 1,
+          "poor_perfusion": 1
         }
       },
       "score": {
         "points": 0,
         "penalty_points_always": 3
+      }
+    },
+    {
+      "id": "remove_iv",
+      "label": "拔除静脉通路",
+      "category": "distractor",
+      "effects": {
+        "set_flags": {
+          "iv_access": false,
+          "iv_confirmed": false
+        },
+        "delta_vitals": {
+          "HR": 4
+        },
+        "delta_symptoms": {
+          "poor_perfusion": 1
+        }
+      },
+      "score": {
+        "points": 0,
+        "penalty_points_always": 2
       }
     },
     {
@@ -396,28 +577,11 @@
       "effects": {
         "delta_vitals": {
           "RR": -2,
-          "SpO2": -2,
+          "SpO2": -3,
           "SBP": -4
         },
         "delta_symptoms": {
           "consciousness": 1
-        }
-      },
-      "score": {
-        "points": 0,
-        "penalty_points_always": 2
-      }
-    },
-    {
-      "id": "remove_iv",
-      "label": "拔除静脉通路",
-      "category": "distractor",
-      "effects": {
-        "set_flags": {
-          "iv_access": false
-        },
-        "delta_vitals": {
-          "HR": 4
         }
       },
       "score": {
@@ -435,7 +599,8 @@
         "effects": {
           "set_flags": {
             "bp_checked": true
-          }
+          },
+          "delta_symptoms": {}
         }
       },
       {
@@ -444,7 +609,9 @@
         "effects": {
           "delta_symptoms": {
             "rash": 1,
-            "wheeze": 1
+            "wheeze": 1,
+            "cough": 1,
+            "throat_tightness": 1
           },
           "delta_vitals": {
             "SpO2": -4,
@@ -461,7 +628,8 @@
         "effects": {
           "delta_symptoms": {
             "wheeze": 1,
-            "rash": 0
+            "rash": 0,
+            "cough": 1
           },
           "delta_vitals": {
             "SpO2": -2,
@@ -481,7 +649,8 @@
             "RR": 3
           },
           "delta_symptoms": {
-            "stridor": 1
+            "stridor": 1,
+            "throat_tightness": 1
           }
         }
       },
@@ -497,7 +666,8 @@
             "RR": 1
           },
           "delta_symptoms": {
-            "consciousness": 1
+            "consciousness": 1,
+            "poor_perfusion": 1
           }
         }
       },
@@ -513,7 +683,9 @@
             "RR": 4
           },
           "delta_symptoms": {
-            "consciousness": 1
+            "consciousness": 1,
+            "cyanosis": 1,
+            "poor_perfusion": 1
           }
         }
       },
@@ -523,7 +695,8 @@
         "effects": {
           "delta_vitals": {
             "SpO2": 2
-          }
+          },
+          "delta_symptoms": {}
         }
       },
       {
@@ -542,7 +715,11 @@
             "stridor": -1,
             "rash": -1,
             "angioedema": -1,
-            "consciousness": -1
+            "consciousness": -1,
+            "cough": -1,
+            "throat_tightness": -1,
+            "poor_perfusion": -1,
+            "cyanosis": -1
           },
           "counter_inc": {
             "epi_effect_ticks": -1
@@ -560,7 +737,8 @@
           },
           "counter_inc": {
             "fluid_effect_ticks": -1
-          }
+          },
+          "delta_symptoms": {}
         }
       },
       {
@@ -601,7 +779,9 @@
             "airway_compromise": true
           },
           "delta_symptoms": {
-            "wheeze": 1
+            "wheeze": 1,
+            "cough": 1,
+            "throat_tightness": 1
           },
           "delta_vitals": {
             "SpO2": -3,
@@ -621,7 +801,8 @@
           },
           "delta_symptoms": {
             "stridor": 1,
-            "angioedema": 1
+            "angioedema": 1,
+            "throat_tightness": 1
           },
           "delta_vitals": {
             "SpO2": -6,
@@ -642,7 +823,9 @@
           "delta_symptoms": {
             "consciousness": 1,
             "stridor": 1,
-            "angioedema": 1
+            "angioedema": 1,
+            "cyanosis": 1,
+            "poor_perfusion": 1
           },
           "delta_vitals": {
             "SpO2": -8,
@@ -659,12 +842,13 @@
         "effects": {
           "delta_vitals": {
             "SpO2": -1
-          }
+          },
+          "delta_symptoms": {}
         }
       },
       {
-        "name": "asphyxia_death_after_180s_no_epi",
-        "when": "(not flags.epi_im_given) and t >= 180",
+        "name": "asphyxia_death_after_300s_no_epi",
+        "when": "(not flags.epi_im_given) and t >= 300",
         "effects": {
           "set_flags": {
             "dead": true
@@ -697,7 +881,11 @@
             "rash": -1,
             "wheeze": -1,
             "stridor": -1,
-            "consciousness": -1
+            "consciousness": -1,
+            "cough": -1,
+            "throat_tightness": -1,
+            "poor_perfusion": -1,
+            "cyanosis": -1
           }
         }
       },
@@ -708,7 +896,8 @@
           "delta_vitals": {
             "SBP": -4,
             "DBP": -2
-          }
+          },
+          "delta_symptoms": {}
         }
       }
     ]
@@ -729,82 +918,90 @@
     "min_reassess_count_recommended": 2,
     "guided_prompts": [
       {
-        "text": "步骤1：停止输液/停药。",
-        "reason": "先切断可疑致敏源，避免过敏反应继续加重。",
-        "done_when": "flags.stopped_infusion"
+        "text": "步骤1：停用可疑药物/停止可疑输液，同时保留抢救通路。",
+        "reason": "立即去除可疑过敏原，同时避免误拔静脉通路影响补液和抢救用药。",
+        "done_when": "flags.stopped_infusion and flags.iv_access"
       },
       {
-        "text": "步骤2：呼救。",
+        "text": "步骤2：呼救并启动院内抢救支援。",
         "reason": "严重过敏反应进展快，需要医生、抢救车及团队协作同步到位。",
         "done_when": "flags.help_called"
       },
       {
-        "text": "步骤3：给氧。",
-        "reason": "呼吸道受累和低氧可迅速恶化，氧疗应早期启动并持续评估效果。",
+        "text": "步骤3：快速ABC评估。",
+        "reason": "判断气道、呼吸和循环是否受累，确认是否进入严重过敏反应处置路径。",
+        "done_when": "flags.abc_assessed or 'abc_assess' in action_first_time"
+      },
+      {
+        "text": "步骤4：保持气道通畅并给氧。",
+        "reason": "气道/呼吸受累可迅速恶化，应尽早给氧并持续观察SpO₂和呼吸表现。",
         "done_when": "flags.oxygen_on"
       },
       {
-        "text": "步骤4：连接监护。",
-        "reason": "连接SpO₂、心率、呼吸频率等监测，才能发现实时病情变化。",
-        "done_when": "flags.monitor_on"
+        "text": "步骤5：体位管理。",
+        "reason": "平卧、抬高下肢有助于改善回心血量；意识障碍时头偏向一侧防误吸。",
+        "done_when": "flags.positioned"
       },
       {
-        "text": "步骤5：测血压/灌注。",
-        "reason": "低血压、末梢灌注差和意识改变提示循环受累，是分级和补液判断依据。",
-        "done_when": "flags.bp_checked"
+        "text": "步骤6：连接监护并测血压/灌注。",
+        "reason": "心率、SpO₂、血压和末梢灌注是判断进展、补液和复评的依据。",
+        "done_when": "flags.monitor_on and flags.bp_checked"
       },
       {
-        "text": "步骤6：肌注肾上腺素。",
-        "reason": "符合严重过敏反应或过敏性休克时，肌注肾上腺素是一线关键处置，应尽早完成。",
+        "text": "步骤7：肌注肾上腺素。",
+        "reason": "诊断或高度疑似严重过敏反应时，肌注肾上腺素是一线关键处置，不能被抗组胺药或激素替代。",
         "done_when": "flags.epi_im_given"
       },
       {
-        "text": "步骤7：体位管理。",
-        "reason": "平卧、抬高下肢等体位支持有助于改善回心血量，并降低循环恶化风险。",
-        "done_when": "'shock_position' in action_first_time"
+        "text": "步骤8：确认/建立静脉通路并根据循环状态补液。",
+        "reason": "存在低血压、末梢灌注差或休克表现时，应尽早进行晶体液容量复苏。",
+        "done_when": "flags.iv_access and (flags.fluid_bolus_given or vitals.SBP >= age_sbp_threshold)"
       },
       {
-        "text": "步骤8：ABC评估。",
-        "reason": "先快速判断气道、呼吸、循环受累程度，明确是否进入严重过敏反应/休克处置路径。",
-        "done_when": "'abc_assess' in action_first_time"
+        "text": "步骤9：按表现给予辅助治疗。",
+        "reason": "喘息时可雾化支气管扩张剂；喉鸣/上气道水肿时可考虑雾化肾上腺素，但均不能替代肌注肾上腺素。",
+        "done_when": "flags.bronchodilator_neb or flags.nebulized_epi or (symptoms.wheeze == 0 and symptoms.stridor == 0)"
       },
       {
-        "text": "步骤9：根据循环状态进行静脉补液。",
-        "reason": "若出现循环不稳定，应按院内流程进行晶体液容量复苏，并保留静脉通路。",
-        "done_when": "flags.fluid_bolus_given or vitals.SBP >= age_sbp_threshold"
-      },
-      {
-        "text": "步骤10：雾化肾上腺素。",
-        "reason": "存在喉头水肿或上气道受累表现时，可作为气道管理的辅助处理。",
-        "done_when": "'nebulized_epinephrine' in action_first_time"
-      },
-      {
-        "text": "步骤11：雾化支气管扩张剂。",
-        "reason": "出现喘鸣、支气管痉挛表现时，可作为支气管痉挛的辅助处理。",
-        "done_when": "'bronchodilator' in action_first_time"
-      },
-      {
-        "text": "步骤12：复评并记录。",
-        "reason": "处置后要反复评估症状、SpO₂、血压、意识和皮肤黏膜变化，建议至少完成2次复评。",
+        "text": "步骤10：5–15 min复评并记录。",
+        "reason": "复评呼吸、循环、意识和皮肤黏膜表现；若仍未缓解，需要考虑重复肌注肾上腺素。",
         "done_when": "flags.reassess_count >= 2"
       },
       {
-        "text": "步骤13：家属沟通。",
-        "reason": "抢救过程中需要简短说明风险、当前处置和下一步安排，减少误解并维持现场秩序。",
-        "done_when": "flags.family_communication"
+        "text": "步骤11：必要时升级处理。",
+        "reason": "两次肾上腺素及补液后仍无缓解，应呼叫急诊/PICU/ICU团队提供高级生命支持。",
+        "done_when": "flags.advanced_support_called or flags.epi_im_doses < 2 or grade <= 2"
       },
       {
-        "text": "步骤14：SBAR交接。",
-        "reason": "稳定后应交代诱因、时间轴、用药反应、当前生命体征和后续观察重点。",
-        "done_when": "flags.sbar_handoff"
+        "text": "步骤12：家属沟通、SBAR交接与后续观察安排。",
+        "reason": "稳定后需交代诱因、时间轴、给药剂量/次数、生命体征变化、观察与转运重点。",
+        "done_when": "flags.family_communication and flags.sbar_handoff"
       }
     ]
   },
   "scoring_notes": {
-    "profile": "v0.8.1_reachable_full_score",
-    "reason": "V0.8 used very short early time windows while each operation automatically advanced 30 seconds; the theoretical maximum raw score was 19/20. In addition, physiologic recovery after correct treatment was too weak, so a complete correct pathway could still fail to reach stable end conditions. V0.8.1 recalibrates score windows and recovery effects so a correct complete pathway can reach 20/20 and finish successfully.",
+    "profile": "v1.2.1_guideline_aligned_2025_consensus",
     "total_score": 20,
-    "principle": "Critical early actions remain time-sensitive; supportive, reassessment, communication and handoff actions are scored within later windows.",
-    "outcome_calibration": "Correct IM epinephrine + oxygen + fluid resuscitation now produces gradual stabilization when completed in time."
+    "principle": "救命核心操作优先：去除可疑诱因、呼救、ABC、给氧、监护/血压、早期肌注肾上腺素、补液、复评与交接。辅助治疗不能替代肌注肾上腺素。",
+    "dose_rule": "本系统面向2–11岁儿童模拟病例，肌注肾上腺素按0.01 mg/kg计算，单次最大0.3 mg；低于目标剂量判定为无效，高于目标剂量判定为剂量不准确，超过0.3 mg判定为严重用药安全事件。",
+    "planning_rule": "部分操作设定前置条件，避免未评估即交接、用二线药替代一线药、未确认循环状态即补液、未复评即重复给药等不合规路径。"
+  },
+  "clinical_progression": {
+    "1": {
+      "stage": "I级｜早期皮肤黏膜/前驱期",
+      "manifestations": "皮肤瘙痒、潮红、风团样皮疹，可伴手足/头皮瘙痒、烦躁或轻度咳嗽；生命体征可暂时稳定。"
+    },
+    "2": {
+      "stage": "II级｜呼吸、胃肠或早期循环受累期",
+      "manifestations": "咳嗽、胸闷、喘息、喉部发紧/声音改变，或腹痛、恶心、呕吐；可出现SpO₂下降或血压较基线下降。"
+    },
+    "3": {
+      "stage": "III级｜严重呼吸受累/循环衰竭期",
+      "manifestations": "喉鸣、发绀、明显低氧、低血压、末梢灌注差、嗜睡或反应差，提示休克或重要器官灌注不足。"
+    },
+    "4": {
+      "stage": "IV级｜心跳或呼吸骤停期",
+      "manifestations": "呼吸骤停或心跳骤停，意识丧失，需立即就地心肺复苏并启动高级生命支持。"
+    }
   }
 }

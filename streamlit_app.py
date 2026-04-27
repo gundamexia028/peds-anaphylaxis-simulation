@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.0 research-quality
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.1 guideline-aligned
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -8,8 +8,8 @@
 - 右侧操作按钮统一使用简洁短标题，不再显示冗余解释；
 - 当生命体征、临床表现或分级发生变化时，相关卡片自动闪动提示；
 - 训练模式保留步骤提示与原因说明；考试模式仅保留干净操作界面；
-- 肌注肾上腺素需输入剂量，系统按体重核对 0.01 mg/kg 与 0.5 mg 上限。
-- 每次开始/重置模拟时自动随机生成年龄与体重：年龄 2-12 岁，体重 10-35 kg。
+- 肌注肾上腺素需输入剂量，系统按体重核对 0.01 mg/kg 与 0.3 mg 儿童上限。
+- 每次开始/重置模拟时自动随机生成年龄与体重：年龄 2-11 岁，体重 10-35 kg。
 - 按用户确认的14项评分细则校准最佳时间窗：总分20分。
 - V1.0新增：访问码、单位/科室/参与者编号、自动保存结果、管理员导出CSV、操作历史即时显示。
 - V1.1新增：接入Supabase云端数据库，训练结束后自动写入training_records表，管理员后台可从数据库读取并导出。
@@ -18,6 +18,7 @@
 - V1.1.3新增：登记界面按院区/科室标准化下拉录入，按院区代码+科室代码+姓名首字母自动生成参与者编号；删除前台项目编号和第几次测试字段；评估阶段标准化为基线评估、模拟培训、培训后考核。
 - V1.1.4新增：按评估阶段自动锁定流程；基线评估=考试模式+初始病例，模拟培训=训练模式+初始病例，培训后考核=考试模式+变体病例Variant A；受试者不再自行选择运行模式和病例脚本。
 - V1.2.0新增：合并数据质量增强、管理员质控概览与研究分析字段；新增阶段完成状态、重复作答识别、阶段顺序核查、数据有效性标记和能力维度指标导出。
+- V1.2.1新增：对齐2025年严重过敏反应共识，加入病情进展分级展示、步骤规划限制、儿童肾上腺素0.01 mg/kg且最大0.3 mg规则、复评后重复给药与升级处理节点。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -48,7 +49,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.0 research-quality"
+APP_VERSION = "V1.2.1 guideline-aligned"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -65,6 +66,7 @@ DEPARTMENT_CODES = {
     "血液科": "XYK",
     "心血管科": "XXGK",
     "神经科": "SJK",
+    "消化科": "XHK",
     "PICU": "PICU",
 }
 
@@ -191,10 +193,10 @@ def randomize_patient_profile(scenario: Dict[str, Any]) -> Dict[str, Any]:
     rng = random.SystemRandom()
     randomized = json.loads(json.dumps(scenario, ensure_ascii=False))
     patient = randomized.setdefault("patient", {})
-    patient["age_years"] = rng.randint(2, 12)
+    patient["age_years"] = rng.randint(2, 11)
     patient["weight_kg"] = rng.randint(10, 35)
     patient["randomized_profile"] = True
-    patient["randomization_rule"] = "age_years: 2-12; weight_kg: 10-35"
+    patient["randomization_rule"] = "age_years: 2-11; weight_kg: 10-35; epinephrine cap: 0.3 mg"
     return randomized
 
 
@@ -288,16 +290,36 @@ def symptoms_text(sim: Simulator) -> str:
         parts.append("皮疹/风团")
     if s.get("angioedema", 0) >= 1:
         parts.append("血管性水肿")
+    if s.get("cough", 0) >= 1:
+        parts.append("咳嗽")
+    if s.get("throat_tightness", 0) >= 1:
+        parts.append("喉部发紧/声音改变")
     if s.get("wheeze", 0) >= 1:
-        parts.append("喘鸣")
+        parts.append("喘息/支气管痉挛")
     if s.get("stridor", 0) >= 1:
-        parts.append("喉鸣/声音改变")
+        parts.append("喉鸣/上气道受累")
     if s.get("gi", 0) >= 1:
-        parts.append("胃肠道症状")
+        parts.append("腹痛/胃肠道症状")
+    if s.get("vomiting", 0) >= 1:
+        parts.append("呕吐")
+    if s.get("poor_perfusion", 0) >= 1:
+        parts.append("末梢灌注差")
+    if s.get("cyanosis", 0) >= 1:
+        parts.append("发绀")
     if s.get("consciousness", 0) >= 1:
         labels = ["烦躁", "嗜睡", "反应差"]
         parts.append(labels[min(2, int(s.get("consciousness", 1)) - 1)])
     return "、".join(parts) if parts else "无明显主观异常"
+
+
+def progression_text(sim: Simulator) -> str:
+    try:
+        item = sim.get_progression_item()
+        stage = str(item.get("stage", ""))
+        manifestations = str(item.get("manifestations", ""))
+        return f"{stage}｜{manifestations}" if manifestations else stage
+    except Exception:
+        return "请结合当前症状和生命体征复评。"
 
 
 def grade_badge(sim: Simulator) -> str:
@@ -474,8 +496,10 @@ def supabase_table_name() -> str:
 def infer_epi_dose_status(report: Dict[str, Any]) -> str:
     issues = "；".join(map(str, report.get("process_safety_issues", []) or []))
     logs = report.get("log", []) or []
-    if "超过0.5" in issues or "心动过速致心衰" in issues:
+    if "超过0.3" in issues or "严重用药安全事件" in issues or "心动过速致心衰" in issues:
         return "overdose"
+    if "剂量高于" in issues or "剂量不准确" in issues:
+        return "excess"
     if "剂量不足" in issues or "操作无效" in issues:
         return "underdose"
     for item in logs:
@@ -486,6 +510,8 @@ def infer_epi_dose_status(report: Dict[str, Any]) -> str:
             return "overdose"
         if message == "im_epinephrine_underdose":
             return "underdose"
+        if message == "im_epinephrine_excess_dose":
+            return "excess"
         if message == "im_epinephrine_dose_verified":
             return "valid"
     timeline = report.get("key_timeline", {}) or {}
@@ -699,7 +725,10 @@ ACTION_LABELS_CN = {
     "remove_iv": "拔除静脉通路",
     "im_epinephrine_dose_verified": "肌注肾上腺素剂量确认",
     "im_epinephrine_underdose": "肌注肾上腺素剂量不足",
-    "im_epinephrine_overdose": "肌注肾上腺素过量",
+    "im_epinephrine_overdose": "肌注肾上腺素超过儿童上限",
+    "im_epinephrine_excess_dose": "肌注肾上腺素高于目标剂量",
+    "repeat_im_epinephrine": "再次肌注肾上腺素",
+    "call_icu_team": "联系急诊/PICU/ICU",
 }
 
 KEY_ACTION_COLUMNS = [
@@ -800,6 +829,9 @@ def research_indicators_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
     position_time = _first_log_time(report, "shock_position")
     neb_epi_time = _first_log_time(report, "nebulized_epinephrine")
     bronchodilator_time = _first_log_time(report, "bronchodilator")
+    repeat_epi_time = _first_log_time(report, "repeat_im_epinephrine")
+    iv_access_time = _first_log_time(report, "confirm_iv_access")
+    advanced_support_time = _first_log_time(report, "call_icu_team")
     recognition_time = _first_available_time(timeline.get("stop_infusion"), timeline.get("call_help"), abc_time)
     epi_status = infer_epi_dose_status(report)
     reassess_count = int(_safe_number(timeline.get("reassess_count", 0), 0))
@@ -818,6 +850,7 @@ def research_indicators_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "bp_assessment_done": _present(timeline.get("bp_check")),
         "epinephrine_given": _present(epi_time),
         "fluid_resuscitation_given": _present(timeline.get("fluid")),
+        "iv_access_confirmed": _present(iv_access_time),
         "abc_assessment_done": _present(abc_time),
         "position_management_done": _present(position_time),
         "family_communication_done": _present(timeline.get("family_communication")),
@@ -842,7 +875,9 @@ def research_indicators_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "bp_assessment_time_sec": _time_or_blank(timeline.get("bp_check")),
         "fluid_resuscitation_given": _yes_no(key_flags["fluid_resuscitation_given"]),
         "fluid_time_sec": _time_or_blank(timeline.get("fluid")),
+        "iv_access_time_sec": _time_or_blank(iv_access_time),
         "epinephrine_under_dose": _yes_no(epi_status == "underdose"),
+        "epinephrine_excess_dose": _yes_no(epi_status == "excess"),
         "epinephrine_over_dose": _yes_no(epi_status == "overdose"),
         "serious_medication_error": _yes_no(serious_error),
         "abc_assessment_done": _yes_no(key_flags["abc_assessment_done"]),
@@ -851,6 +886,8 @@ def research_indicators_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "position_time_sec": _time_or_blank(position_time),
         "nebulized_epinephrine_time_sec": _time_or_blank(neb_epi_time),
         "bronchodilator_time_sec": _time_or_blank(bronchodilator_time),
+        "repeat_epinephrine_time_sec": _time_or_blank(repeat_epi_time),
+        "advanced_support_time_sec": _time_or_blank(advanced_support_time),
         "reassessment_done": _yes_no(key_flags["reassessment_done"]),
         "reassessment_count_analysis": reassess_count,
         "family_communication_done": _yes_no(key_flags["family_communication_done"]),
@@ -1158,13 +1195,14 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
         "reassess_count": timeline.get("reassess_count", ""),
         "action_count": sum(1 for e in _get_logs(report) if e.get("kind") == "action" and e.get("message") != "penalty"),
         "wrong_action_count": sum(1 for e in _get_logs(report) if e.get("kind") == "action" and e.get("message") == "penalty"),
-        "harmful_action_count": sum(_action_attempt_count(report, x) for x in ["continue_infusion", "sedation", "remove_iv", "im_epinephrine_overdose"]),
+        "harmful_action_count": sum(_action_attempt_count(report, x) for x in ["continue_infusion", "sedation", "remove_iv", "im_epinephrine_overdose", "im_epinephrine_excess_dose"]),
         "epi_target_dose_mg": timeline.get("epi_target_dose_mg", ""),
         "epi_input_dose_mg": timeline.get("epi_last_dose_mg", ""),
         "epi_dose_status": infer_epi_dose_status(report),
         "epi_delay_seconds": epi_time if epi_time is not None else "",
         "underdose_epi": _yes_no("剂量不足" in issues or _action_attempt_count(report, "im_epinephrine_underdose") > 0),
-        "overdose_epi": _yes_no("超过0.5" in issues or _action_attempt_count(report, "im_epinephrine_overdose") > 0),
+        "excess_dose_epi": _yes_no("剂量高于" in issues or _action_attempt_count(report, "im_epinephrine_excess_dose") > 0),
+        "overdose_epi": _yes_no("超过0.3" in issues or "严重用药安全事件" in issues or _action_attempt_count(report, "im_epinephrine_overdose") > 0),
         "final_spo2": final_vitals.get("SpO2", ""),
         "final_hr": final_vitals.get("HR", ""),
         "final_rr": final_vitals.get("RR", ""),
@@ -2136,6 +2174,7 @@ def render_patient_status(sim: Simulator, scenario: Dict[str, Any], changes: Dic
     )
     baseline = scenario.get("baseline", {}).get("time_zero_description", "")
     symptom_now = symptoms_text(sim)
+    progression_now = progression_text(sim)
     changed_vitals: Set[str] = changes.get("vitals", set()) or set()
     any_clinical_change = bool(changes.get("symptoms")) or bool(changes.get("grade")) or bool(changed_vitals)
 
@@ -2171,6 +2210,10 @@ def render_patient_status(sim: Simulator, scenario: Dict[str, Any], changes: Dic
             <div class='clinical-card{flash_class(bool(changes.get('symptoms')))}'>
                 <div class='label'>当前症状</div>
                 <div class='value'>{html.escape(symptom_now)}</div>
+            </div>
+            <div class='clinical-card{flash_class(bool(changes.get('grade')))}'>
+                <div class='label'>病情进展分级</div>
+                <div class='value'>{html.escape(progression_now)}</div>
             </div>
             <div class='vital-grid'>{''.join(vital_cards)}</div>
             {banner}
@@ -2428,12 +2471,12 @@ def render_epinephrine_dose_panel(sim: Simulator) -> bool:
     the operation area focused and avoid accidental double-click processing.
     """
     pending_id = st.session_state.get("pending_dose_action_id", "")
-    if pending_id != "im_epinephrine":
+    if pending_id not in {"im_epinephrine", "repeat_im_epinephrine"}:
         return False
 
     weight = float(getattr(sim.state, "weight_kg", 0) or 0)
-    target_mg = round(0.01 * weight, 3)
-    max_single_mg = 0.5
+    max_single_mg = 0.3
+    target_mg = round(min(0.01 * weight, max_single_mg), 3)
     st.markdown(
         "<div class='dose-card'>"
         "<div class='title'>肌注肾上腺素：请输入本次总剂量</div>"
@@ -2456,7 +2499,7 @@ def render_epinephrine_dose_panel(sim: Simulator) -> bool:
     )
     c_ok, c_cancel = st.columns([1, 1], gap="medium")
     if c_ok.button("确认剂量并执行", type="primary", use_container_width=True):
-        result = sim.apply_epinephrine_dose(float(dose_mg))
+        result = sim.apply_epinephrine_dose(float(dose_mg), action_id=pending_id)
         st.session_state.last_dose_feedback = str(result.get("message", ""))
         st.session_state.last_dose_feedback_level = str(result.get("status", ""))
         st.session_state.pending_dose_action_id = ""
@@ -2526,7 +2569,7 @@ def render_simulation() -> None:
                     st.success(msg)
                 elif level == "overdose":
                     st.error(msg)
-                elif level == "underdose":
+                elif level in {"underdose", "excess", "blocked"}:
                     st.warning(msg)
                 else:
                     st.info(msg)
@@ -2543,15 +2586,19 @@ def render_simulation() -> None:
                     aid = action.get("id")
                     button_text = f"{idx + local_index + 1}. {short_label}"
                     with col:
+                        allowed, block_reason = sim.is_action_allowed(aid) if hasattr(sim, "is_action_allowed") else (True, "")
+                        disabled = bool(dose_pending or not allowed)
+                        help_text = "" if allowed else (block_reason if sim.mode == "coach" else "当前步骤暂不可用。")
                         if st.button(
                             button_text,
                             key=f"action_{aid}_{sim.state.t}_{idx}_{local_index}",
                             use_container_width=True,
-                            disabled=dose_pending,
+                            disabled=disabled,
+                            help=help_text,
                         ):
                             st.session_state.last_dose_feedback = ""
                             st.session_state.last_dose_feedback_level = ""
-                            if aid == "im_epinephrine":
+                            if aid in {"im_epinephrine", "repeat_im_epinephrine"}:
                                 st.session_state.pending_dose_action_id = aid
                                 st.session_state.pending_dose_action_label = full_label
                                 st.rerun()

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (Training v1.1)
+Pediatric Ward Anaphylaxis Simulator (Training v1.2.1 guideline-aligned)
 
 特点（培训版）：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
@@ -152,11 +152,11 @@ class Simulator:
         s = self.state.symptoms
         flags = self.state.flags
 
-        if flags.get("cardiac_arrest", False) or v.get("SpO2", 100) <= self.scenario["thresholds"]["SpO2_arrest"]:
+        if flags.get("cardiac_arrest", False) or flags.get("dead", False) or v.get("SpO2", 100) <= self.scenario["thresholds"]["SpO2_arrest"]:
             return 4
 
         sbp_thr = self.age_sbp_threshold()
-        if v.get("SBP", 999) < sbp_thr or s.get("consciousness", 0) >= 2:
+        if v.get("SBP", 999) < sbp_thr or s.get("consciousness", 0) >= 2 or s.get("cyanosis", 0) >= 1 or s.get("poor_perfusion", 0) >= 2:
             return 3
         if (s.get("stridor", 0) >= 2 or s.get("wheeze", 0) >= 2) and v.get("SpO2", 100) < self.scenario["thresholds"]["SpO2_critical"]:
             return 3
@@ -167,7 +167,7 @@ class Simulator:
             return 2
         if v.get("SpO2", 100) < self.scenario["thresholds"]["SpO2_low"]:
             return 2
-        if s.get("wheeze", 0) >= 1 or s.get("stridor", 0) >= 1 or s.get("gi", 0) >= 2:
+        if s.get("wheeze", 0) >= 1 or s.get("stridor", 0) >= 1 or s.get("throat_tightness", 0) >= 1 or s.get("gi", 0) >= 2 or s.get("vomiting", 0) >= 1 or s.get("poor_perfusion", 0) >= 1:
             return 2
 
         return 1
@@ -226,6 +226,44 @@ class Simulator:
         self.state.grade = self.compute_grade()
 
 
+    def _eval_ctx(self) -> Dict[str, Any]:
+        return {
+            "t": self.state.t,
+            "vitals": SimpleNamespace(**self.state.vitals),
+            "symptoms": SimpleNamespace(**self.state.symptoms),
+            "flags": SimpleNamespace(**self.state.flags),
+            "age_sbp_threshold": self.age_sbp_threshold(),
+            "grade": self.state.grade,
+            "action_first_time": self.action_first_time,
+        }
+
+    def is_action_allowed(self, action_id: str) -> Tuple[bool, str]:
+        """Scenario-driven step-planning restriction.
+
+        Actions without an availability rule are always selectable. Actions with
+        availability.when are disabled until the rule becomes true. The rule is
+        also enforced in apply_action to protect script/API execution.
+        """
+        action = next((a for a in self.actions if a.get("id") == action_id), None)
+        if not action:
+            return False, "未知操作。"
+        availability = action.get("availability", {}) or {}
+        when = str(availability.get("when", "") or "").strip()
+        reason = str(availability.get("reason", "当前步骤暂不可用，请先完成前置评估或处置。"))
+        if not when:
+            return True, ""
+        try:
+            return (True, "") if safe_eval(when, self._eval_ctx()) else (False, reason)
+        except Exception as e:
+            return False, f"当前步骤暂不可用：{reason}"
+
+    def get_progression_item(self) -> Dict[str, str]:
+        data = self.scenario.get("clinical_progression", {}) or {}
+        item = data.get(str(self.state.grade), {})
+        if not item:
+            return {"stage": f"分级 {self.state.grade}", "manifestations": "请结合当前症状和生命体征复评。"}
+        return {"stage": str(item.get("stage", "")), "manifestations": str(item.get("manifestations", ""))}
+
     def get_guided_prompt_item(self) -> Dict[str, str]:
         """Return the current coach-mode prompt with optional reason text.
 
@@ -238,17 +276,8 @@ class Simulator:
         while self.guided_index < len(self.guided_prompts):
             item = self.guided_prompts[self.guided_index]
             expr = item.get('done_when', '')
-            ctx = {
-                "t": self.state.t,
-                "vitals": SimpleNamespace(**self.state.vitals),
-                "symptoms": SimpleNamespace(**self.state.symptoms),
-                "flags": SimpleNamespace(**self.state.flags),
-                "age_sbp_threshold": self.age_sbp_threshold(),
-                "grade": self.state.grade,
-                "action_first_time": self.action_first_time,
-            }
             try:
-                done = safe_eval(expr, ctx)
+                done = safe_eval(expr, self._eval_ctx())
             except Exception:
                 done = False
             if done:
@@ -297,11 +326,18 @@ class Simulator:
         symptom_text = []
         if s.get("rash",0) >= 1: symptom_text.append("皮疹/风团")
         if s.get("angioedema",0) >= 1: symptom_text.append("血管性水肿")
-        if s.get("wheeze",0) >= 1: symptom_text.append("喘鸣")
-        if s.get("stridor",0) >= 1: symptom_text.append("喉鸣/声音改变")
-        if s.get("gi",0) >= 1: symptom_text.append("胃肠道症状")
-        if s.get("consciousness",0) >= 1: symptom_text.append(["烦躁","嗜睡","反应差"][min(2, s["consciousness"]-1)])
+        if s.get("cough",0) >= 1: symptom_text.append("咳嗽")
+        if s.get("throat_tightness",0) >= 1: symptom_text.append("喉部发紧/声音改变")
+        if s.get("wheeze",0) >= 1: symptom_text.append("喘息/支气管痉挛")
+        if s.get("stridor",0) >= 1: symptom_text.append("喉鸣/上气道受累")
+        if s.get("gi",0) >= 1: symptom_text.append("腹痛/胃肠道症状")
+        if s.get("vomiting",0) >= 1: symptom_text.append("呕吐")
+        if s.get("poor_perfusion",0) >= 1: symptom_text.append("末梢灌注差")
+        if s.get("cyanosis",0) >= 1: symptom_text.append("发绀")
+        if s.get("consciousness",0) >= 1: symptom_text.append(["烦躁","嗜睡","反应差"][min(2, int(s.get("consciousness",1))-1)])
 
+        progression = self.get_progression_item()
+        progression_line = f"病情进展：{progression.get('stage','')}｜{progression.get('manifestations','')}\n"
         prompt = self.get_guided_prompt() if self.mode == "coach" else ""
         prompt_line = f"当前提示：{prompt}\n" if prompt else ""
         return (
@@ -333,6 +369,10 @@ class Simulator:
         action = next((a for a in self.actions if a["id"] == action_id), None)
         if not action:
             self._log("action", "unknown_action", {"action_id": action_id})
+            return
+        allowed, reason = self.is_action_allowed(action_id)
+        if not allowed:
+            self._log("action", "blocked_by_step_plan", {"action_id": action_id, "reason": reason})
             return
 
         first_time = action_id not in self.action_first_time
@@ -369,31 +409,39 @@ class Simulator:
         self.state.grade = self.compute_grade()
         self._log("action", action_id, {"label": action.get("label", ""), "gained": gained, "t": self.state.t})
 
-    def apply_epinephrine_dose(self, dose_mg: float) -> Dict[str, Any]:
+    def apply_epinephrine_dose(self, dose_mg: float, action_id: str = "im_epinephrine") -> Dict[str, Any]:
         """Apply IM epinephrine only after dose verification.
 
-        Rule used by the web prototype:
-        - Correct preset dose = 0.01 mg/kg, capped at 0.5 mg.
-        - Below the calculated dose: judged ineffective, no epinephrine effect and no score.
-        - Above 0.5 mg: judged as tachycardia-induced heart failure event.
-        - Calculated dose through 0.5 mg: apply the original im_epinephrine action.
+        V1.2.1 guideline-aligned rule for this pediatric simulation:
+        - Target dose = 0.01 mg/kg, capped at 0.3 mg for the 2–11-year-old scenario range.
+        - A small tolerance of ±0.01 mg is accepted to avoid rounding artifacts.
+        - Below target: ineffective/underdose, no epinephrine score/effect.
+        - Above target but <= 0.3 mg: excess-dose medication-safety defect; partial physiologic effect, no score.
+        - Above 0.3 mg: serious medication-safety event with deterioration.
         """
         try:
             dose = float(dose_mg)
         except Exception:
             dose = 0.0
 
+        allowed, reason = self.is_action_allowed(action_id)
+        if not allowed:
+            self._log("action", "blocked_by_step_plan", {"action_id": action_id, "reason": reason})
+            return {"status": "blocked", "message": f"当前不能执行该给药步骤：{reason}", "dose_mg": dose, "target_dose_mg": None}
+
         weight = float(self.state.weight_kg)
-        target = min(0.01 * weight, 0.5)
+        max_single = 0.3
+        target = min(0.01 * weight, max_single)
         target = round(target, 3)
-        tolerance = 1e-9
+        tolerance = 0.01
 
         self.state.flags["epi_last_dose_mg"] = round(dose, 3)
         self.state.flags["epi_target_dose_mg"] = target
+        self.state.flags["epi_max_single_mg"] = max_single
         self.state.flags["epi_dose_checked"] = True
         self.state.flags["epi_im_attempts"] = int(self.state.flags.get("epi_im_attempts", 0)) + 1
 
-        if dose > 0.5 + tolerance:
+        if dose > max_single + 1e-9:
             self.state.flags["epi_overdose_event"] = True
             self.state.flags["tachycardia_heart_failure"] = True
             self.state.vitals["HR"] = 220
@@ -402,57 +450,28 @@ class Simulator:
             self.state.vitals["SBP"] = min(float(self.state.vitals.get("SBP", 100)), 55)
             self.state.vitals["DBP"] = min(float(self.state.vitals.get("DBP", 60)), 32)
             self.state.symptoms["consciousness"] = max(int(self.state.symptoms.get("consciousness", 0)), 2)
+            self.state.symptoms["poor_perfusion"] = max(int(self.state.symptoms.get("poor_perfusion", 0)), 2)
             self.state.grade = self.compute_grade()
-            self._log(
-                "action",
-                "im_epinephrine_overdose",
-                {
-                    "dose_mg": round(dose, 3),
-                    "target_dose_mg": target,
-                    "max_single_mg": 0.5,
-                    "result": "tachycardia_heart_failure",
-                    "gained": 0,
-                },
-            )
-            return {
-                "status": "overdose",
-                "message": f"剂量 {dose:.2f} mg 超过 0.5 mg：判定为心动过速致心衰事件，本次肌注肾上腺素不得分。",
-                "dose_mg": dose,
-                "target_dose_mg": target,
-            }
+            self._log("action", "im_epinephrine_overdose", {"action_id": action_id, "dose_mg": round(dose, 3), "target_dose_mg": target, "max_single_mg": max_single, "result": "serious_medication_error", "gained": 0})
+            return {"status": "overdose", "message": f"剂量 {dose:.2f} mg 超过儿童单次上限 {max_single:g} mg：判定为严重用药安全事件，本次肌注肾上腺素不得分。", "dose_mg": dose, "target_dose_mg": target}
 
         if dose < target - tolerance:
             self.state.flags["epi_underdose_event"] = True
-            self._log(
-                "action",
-                "im_epinephrine_underdose",
-                {
-                    "dose_mg": round(dose, 3),
-                    "target_dose_mg": target,
-                    "result": "ineffective",
-                    "gained": 0,
-                },
-            )
-            return {
-                "status": "underdose",
-                "message": f"剂量 {dose:.2f} mg 低于本例正确剂量 {target:g} mg：判定为操作无效，生命体征不会因肾上腺素改善。",
-                "dose_mg": dose,
-                "target_dose_mg": target,
-            }
+            self._log("action", "im_epinephrine_underdose", {"action_id": action_id, "dose_mg": round(dose, 3), "target_dose_mg": target, "result": "ineffective", "gained": 0})
+            return {"status": "underdose", "message": f"剂量 {dose:.2f} mg 低于本例目标剂量 {target:g} mg：判定为操作无效，生命体征不会因肾上腺素改善。", "dose_mg": dose, "target_dose_mg": target}
+
+        if dose > target + tolerance:
+            self.state.flags["epi_excess_dose_event"] = True
+            self._log("action", "im_epinephrine_excess_dose", {"action_id": action_id, "dose_mg": round(dose, 3), "target_dose_mg": target, "max_single_mg": max_single, "result": "excess_dose_partial_effect", "gained": 0})
+            # Partial physiologic effect without awarding the action score.
+            self.apply_effects({"delta_vitals": {"SBP": 4, "DBP": 2, "SpO2": 1, "HR": 6}, "delta_symptoms": {"wheeze": -1, "stridor": -1}})
+            self.state.grade = self.compute_grade()
+            return {"status": "excess", "message": f"剂量 {dose:.2f} mg 高于本例目标剂量 {target:g} mg，虽未超过儿童单次上限 {max_single:g} mg，但判定为剂量不准确/用药安全缺陷，本次不得分。", "dose_mg": dose, "target_dose_mg": target}
 
         self.state.flags["epi_valid_dose_mg"] = round(dose, 3)
-        self._log(
-            "action",
-            "im_epinephrine_dose_verified",
-            {"dose_mg": round(dose, 3), "target_dose_mg": target, "result": "effective"},
-        )
-        self.apply_action("im_epinephrine")
-        return {
-            "status": "valid",
-            "message": f"剂量 {dose:.2f} mg 已确认有效：按肌注肾上腺素处置执行。",
-            "dose_mg": dose,
-            "target_dose_mg": target,
-        }
+        self._log("action", "im_epinephrine_dose_verified", {"action_id": action_id, "dose_mg": round(dose, 3), "target_dose_mg": target, "max_single_mg": max_single, "result": "effective"})
+        self.apply_action(action_id)
+        return {"status": "valid", "message": f"剂量 {dose:.2f} mg 已确认有效：按肌注肾上腺素处置执行。", "dose_mg": dose, "target_dose_mg": target}
 
     def is_done(self) -> Tuple[bool, str]:
         ctx = {
@@ -502,8 +521,10 @@ class Simulator:
             issues.append("未完成SBAR交接")
         if f.get("epi_underdose_event", False):
             issues.append("肾上腺素剂量不足/操作无效")
+        if f.get("epi_excess_dose_event", False):
+            issues.append("肾上腺素剂量高于本例目标剂量/剂量不准确")
         if f.get("epi_overdose_event", False):
-            issues.append("肾上腺素剂量超过0.5 mg/心动过速致心衰")
+            issues.append("肾上腺素剂量超过0.3 mg/严重用药安全事件")
         return issues
 
     def build_report(self) -> Dict[str, Any]:
@@ -530,6 +551,7 @@ class Simulator:
             "mode": self.mode,
             "end_time_seconds": self.state.t,
             "final_grade": grade_map.get(self.state.grade, str(self.state.grade)),
+            "final_progression": self.get_progression_item(),
             "final_vitals": self.state.vitals,
             "final_symptoms": self.state.symptoms,
             "score": max(0, self.score - self.penalties),
@@ -545,9 +567,13 @@ class Simulator:
                 "monitor": t_of("connect_monitor"),
                 "bp_check": t_of("check_bp"),
                 "epi_im": t_of("im_epinephrine"),
+                "repeat_epi_im": t_of("repeat_im_epinephrine"),
                 "epi_last_dose_mg": self.state.flags.get("epi_last_dose_mg", None),
                 "epi_target_dose_mg": self.state.flags.get("epi_target_dose_mg", None),
+                "epi_max_single_mg": self.state.flags.get("epi_max_single_mg", None),
+                "iv_access_confirmed": t_of("confirm_iv_access"),
                 "fluid": t_of("fluid_bolus"),
+                "advanced_support": t_of("call_icu_team"),
                 "family_communication": t_of("family_explain"),
                 "sbar_handoff": t_of("sbar_handoff"),
                 "reassess_count": int(self.state.flags.get("reassess_count", 0)),
