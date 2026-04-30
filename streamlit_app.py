@@ -49,7 +49,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.7 module-boundary scoring and baseline-post survey"
+APP_VERSION = "V1.2.8 registration-clean, no-hint intro and auto-return"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -256,6 +256,7 @@ def init_session() -> None:
         "last_dose_feedback_level": "",
         "result_saved": False,
         "admin_export_view": "训练汇总",
+        "last_completion_notice": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -1126,16 +1127,43 @@ def start_simulation(scenario_path: Path, mode: str, seed: int, participant_id: 
         st.session_state.baseline_stage_completed = False
 
 
+def _return_to_registration_after_save(report: Dict[str, Any], why: str) -> None:
+    """After a stage is saved, return directly to the registration page for the next stage."""
+    phase = st.session_state.get("assessment_phase", "本阶段") or "本阶段"
+    participant_id = st.session_state.get("participant_id", "") or ""
+    score = report.get("score", "") if isinstance(report, dict) else ""
+    max_score = report.get("max_score", "") if isinstance(report, dict) else ""
+    score_text = f"，得分 {score}/{max_score}" if score != "" and max_score != "" else ""
+    st.session_state.last_completion_notice = f"{phase}已完成并保存{score_text}。请在登记界面核对信息后，选择下一阶段或下一位受试者。"
+
+    st.session_state.profile_completed = False
+    st.session_state.active_simulator = None
+    st.session_state.active_scenario = None
+    st.session_state.active_scenario_path = ""
+    st.session_state.active_script_name = ""
+    st.session_state.ended = False
+    st.session_state.end_reason = ""
+    st.session_state.last_ui_snapshot = None
+    st.session_state.pending_dose_action_id = ""
+    st.session_state.pending_dose_action_label = ""
+    st.session_state.pending_volume_action_id = ""
+    st.session_state.pending_volume_action_label = ""
+    st.session_state.pending_steroid_action_id = ""
+    st.session_state.pending_steroid_action_label = ""
+    st.session_state.last_dose_feedback = ""
+    st.session_state.last_dose_feedback_level = ""
+    st.session_state.result_saved = False
+
+
 def _save_and_end_report(report: Dict[str, Any], why: str) -> None:
     out_dir = RUNS_DIR / st.session_state.session_id
     json_path, md_path = save_report(report, str(out_dir))
     if not st.session_state.get("result_saved", False):
         save_result_record(report)
         st.session_state.result_saved = True
-    st.session_state.ended = True
-    st.session_state.end_reason = why
     st.session_state.last_report = report
     st.session_state.last_report_paths = (json_path, md_path)
+    _return_to_registration_after_save(report, why)
 
 
 def _needs_baseline_post_survey(why: str) -> bool:
@@ -1196,7 +1224,7 @@ def render_participant_entry_page() -> None:
         f"""
         <div class='login-hero'>
             <div class='login-title'>{html.escape(APP_TITLE)}</div>
-            <div class='login-subtitle'>多院区 · 多科室 · 多护理层级｜药物诱发过敏反应识别与初始处置能力评价</div>
+            <div class='login-subtitle'>多院区 · 多科室 · 多护理层级｜虚拟仿真训练与评估</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1209,6 +1237,9 @@ def render_participant_entry_page() -> None:
             "<div class='login-card-desc'>请按院区、科室和姓名首字母完成登记。系统将自动生成匿名参与者编号，并写入训练报告和云端数据库。</div>",
             unsafe_allow_html=True,
         )
+        if st.session_state.get("last_completion_notice"):
+            st.success(st.session_state.get("last_completion_notice"))
+            st.session_state.last_completion_notice = ""
 
         with st.form("participant_profile_form", clear_on_submit=False):
             st.markdown("##### 基本身份信息")
@@ -1290,7 +1321,7 @@ def render_participant_entry_page() -> None:
             )
 
             st.markdown(
-                "<div class='form-note'>说明：项目编号与第几次测试不再由受试者填写；系统将在后台保留版本号、Session ID 和默认尝试序号用于数据追踪；既往培训/处置经历将在基线评估完成后补充采集。</div>",
+                "<div class='form-note'>说明：项目编号与第几次测试不再由受试者填写；系统将在后台保留版本号、Session ID 和默认尝试序号用于数据追踪；部分补充信息将在相应流程结束后按系统提示采集。</div>",
                 unsafe_allow_html=True,
             )
 
@@ -1300,6 +1331,16 @@ def render_participant_entry_page() -> None:
             initials_clean = normalize_initials(participant_initials)
             generated_id = build_participant_id(campus, department, initials_clean)
             parts = participant_code_parts(campus, department, initials_clean)
+            old_participant_id = st.session_state.get("participant_id", "")
+            participant_changed = bool(old_participant_id and generated_id and generated_id != old_participant_id)
+            if participant_changed:
+                st.session_state.prior_anaphylaxis_training = ""
+                st.session_state.prior_simulation_experience = ""
+                st.session_state.real_case_experience = ""
+                st.session_state.prior_experience_survey_completed = False
+                st.session_state.prior_experience_survey_time = ""
+                st.session_state.baseline_performance_completed = False
+                st.session_state.baseline_stage_completed = False
 
             st.session_state.participant_initials = initials_clean
             st.session_state.participant_id = generated_id
@@ -1334,7 +1375,7 @@ def render_participant_entry_page() -> None:
                 st.rerun()
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.2.7 控制台")
+    st.sidebar.title("V1.2.8 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1998,11 +2039,11 @@ def render_intro() -> None:
     with right:
         st.container(border=True).markdown(
             """
-            **V1.2.7 模块边界评分与基线后补充问卷版**
+            **本阶段使用说明**
 
-            本版在流程锁定基础上，采用100分模块边界评分：抢救启动和初始支持允许并行，首次肌注肾上腺素为核心分界点，肾上腺素后进入顺序化处理模块，并将气道梗阻、球囊面罩加压给氧、高级支持、CPR作为条件性危重分支单独记录。系统按院区、科室和姓名首字母自动生成匿名参与者编号，并在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
+            请确认左侧显示的评估阶段与本人信息无误，然后点击“开始/重置本阶段任务”。进入情境后，请根据页面显示的患儿状态和个人临床判断独立完成操作。
 
-            管理员后台仍支持三类导出：训练汇总CSV、操作明细CSV、完整JSONL。
+            操作过程中请勿刷新页面、关闭页面或使用浏览器返回键。系统会自动记录操作过程，并在本阶段完成后返回登记界面，用于选择下一阶段或下一位受试者。
             """
         )
 
@@ -2019,7 +2060,7 @@ def require_app_access() -> bool:
         f"""
         <div class='access-card'>
             <div class='access-card-title'>进入虚拟仿真训练系统</div>
-            <div class='access-card-desc'>请输入访问码。系统用于儿科护士药物诱发过敏反应识别与初始处置能力评价，不用于临床诊疗决策。</div>
+            <div class='access-card-desc'>请输入访问码。系统仅用于护理教学、培训与科研，不用于临床诊疗决策。</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -2067,7 +2108,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.2.7 模块边界评分与研究质控导出版")
+    st.markdown("### 管理员后台｜V1.2.8 模块边界评分与研究质控导出版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -2434,6 +2475,8 @@ def render_simulation() -> None:
     compact_header()
 
     finalize_if_done()
+    if st.session_state.active_simulator is None or not st.session_state.get("profile_completed", False):
+        st.rerun()
     if st.session_state.get("pending_prior_experience_survey", False):
         render_prior_experience_survey()
         return
@@ -2548,19 +2591,11 @@ def render_simulation() -> None:
                 st.rerun()
 
             if sim.mode != "exam":
-                if c2.button("结束并生成报告", use_container_width=True):
+                if c2.button("结束并保存", use_container_width=True):
                     report = enrich_report(sim.build_report(), end_reason="manual_end")
-                    out_dir = RUNS_DIR / st.session_state.session_id
-                    json_path, md_path = save_report(report, str(out_dir))
-                    if not st.session_state.get("result_saved", False):
-                        save_result_record(report)
-                        st.session_state.result_saved = True
-                    st.session_state.ended = True
-                    st.session_state.end_reason = "manual_end"
-                    st.session_state.last_report = report
-                    st.session_state.last_report_paths = (json_path, md_path)
+                    _save_and_end_report(report, "manual_end")
                     st.rerun()
-            c3.caption("训练模式可手动结束；考试模式需达到系统结束条件。")
+            c3.caption("训练模式可手动结束并保存；考试模式需达到系统结束条件。")
 
 
 def render_report() -> None:
