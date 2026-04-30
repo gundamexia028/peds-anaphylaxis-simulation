@@ -97,7 +97,7 @@ python engine.py --scenario scenarios/peds_ward_anaphylaxis_iv_v1_1_training.jso
 
 
 ## v1.2.8 计分上限修复
-- 计分仅在每个动作第一次执行时生效（同一动作重复执行不再重复加分），从机制上保证总分不超过满分（25分）。
+- 计分仅在每个动作第一次执行时生效（同一动作重复执行不再重复加分），从机制上保证总分不超过普通路径满分（100分）。
 
 
 ## Hotfix 1.2.8.1

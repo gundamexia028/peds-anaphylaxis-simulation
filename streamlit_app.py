@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.6g delayed scoring and standard assessment stop candidate
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.7 module-boundary scoring and baseline-post survey
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -10,7 +10,7 @@
 - 训练模式保留步骤提示与原因说明；考试模式仅保留干净操作界面；
 - 肌注肾上腺素需输入剂量，系统按体重核对 0.01 mg/kg 与 0.3 mg 上限。
 - 每次开始/重置模拟时自动随机生成年龄与体重：年龄 2-11 岁，体重 10-35 kg。
-- 按用户确认的15步路径校准评分与动态演化：总分25分。
+- 按模块边界校准评分与动态演化：普通路径总分100分。
 - V1.0新增：访问码、单位/科室/参与者编号、自动保存结果、管理员导出CSV、操作历史即时显示。
 - V1.1新增：接入Supabase云端数据库，训练结束后自动写入training_records表，管理员后台可从数据库读取并导出。
 - V1.1.1新增：管理员后台增强导出：汇总CSV、操作明细CSV、完整JSONL；关键操作时间点和剂量/错误指标展开为独立字段。
@@ -49,7 +49,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.6g delayed scoring and standard assessment stop candidate"
+APP_VERSION = "V1.2.7 module-boundary scoring and baseline-post survey"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -214,6 +214,13 @@ def init_session() -> None:
         "prior_anaphylaxis_training": "",
         "prior_simulation_experience": "",
         "real_case_experience": "",
+        "prior_experience_survey_completed": False,
+        "prior_experience_survey_time": "",
+        "baseline_performance_completed": False,
+        "baseline_stage_completed": False,
+        "pending_prior_experience_survey": False,
+        "pending_completion_reason": "",
+        "pending_report": None,
         "training_batch": "",
         "assessment_phase": "基线评估",
         "workflow_mode": "exam",
@@ -398,6 +405,10 @@ def build_session_metadata(end_reason: str = "") -> Dict[str, Any]:
         "prior_anaphylaxis_training": st.session_state.get("prior_anaphylaxis_training", ""),
         "prior_simulation_experience": st.session_state.get("prior_simulation_experience", ""),
         "real_case_experience": st.session_state.get("real_case_experience", ""),
+        "prior_experience_survey_completed": bool(st.session_state.get("prior_experience_survey_completed", False)),
+        "prior_experience_survey_time": st.session_state.get("prior_experience_survey_time", ""),
+        "baseline_performance_completed": bool(st.session_state.get("baseline_performance_completed", False)),
+        "baseline_stage_completed": bool(st.session_state.get("baseline_stage_completed", False)),
         "training_batch": st.session_state.get("training_batch", ""),
         "assessment_phase": st.session_state.get("assessment_phase", ""),
         "workflow_mode": st.session_state.get("workflow_mode", ""),
@@ -427,6 +438,8 @@ def research_metadata_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
         "prior_anaphylaxis_training": session.get("prior_anaphylaxis_training", ""),
         "prior_simulation_experience": session.get("prior_simulation_experience", ""),
         "real_case_experience": session.get("real_case_experience", ""),
+        "prior_experience_survey_completed": session.get("prior_experience_survey_completed", ""),
+        "prior_experience_survey_time": session.get("prior_experience_survey_time", ""),
         "training_batch": session.get("training_batch", ""),
         "assessment_phase": session.get("assessment_phase", ""),
         "workflow_mode": session.get("workflow_mode", ""),
@@ -856,6 +869,8 @@ def full_report_from_database_row(row: Dict[str, Any]) -> Dict[str, Any]:
         session.setdefault("prior_anaphylaxis_training", "")
         session.setdefault("prior_simulation_experience", "")
         session.setdefault("real_case_experience", "")
+        session.setdefault("prior_experience_survey_completed", "")
+        session.setdefault("prior_experience_survey_time", "")
         session.setdefault("training_batch", "")
         session.setdefault("assessment_phase", "")
         session.setdefault("workflow_mode", "")
@@ -1103,24 +1118,51 @@ def start_simulation(scenario_path: Path, mode: str, seed: int, participant_id: 
     st.session_state.last_dose_feedback = ""
     st.session_state.last_dose_feedback_level = ""
     st.session_state.result_saved = False
+    st.session_state.pending_prior_experience_survey = False
+    st.session_state.pending_completion_reason = ""
+    st.session_state.pending_report = None
+    st.session_state.baseline_performance_completed = False
+    if st.session_state.get("assessment_phase") != "基线评估":
+        st.session_state.baseline_stage_completed = False
+
+
+def _save_and_end_report(report: Dict[str, Any], why: str) -> None:
+    out_dir = RUNS_DIR / st.session_state.session_id
+    json_path, md_path = save_report(report, str(out_dir))
+    if not st.session_state.get("result_saved", False):
+        save_result_record(report)
+        st.session_state.result_saved = True
+    st.session_state.ended = True
+    st.session_state.end_reason = why
+    st.session_state.last_report = report
+    st.session_state.last_report_paths = (json_path, md_path)
+
+
+def _needs_baseline_post_survey(why: str) -> bool:
+    return bool(
+        st.session_state.get("assessment_phase") == "基线评估"
+        and why in ("success", "standard_assessment_completed")
+        and not st.session_state.get("prior_experience_survey_completed", False)
+    )
 
 
 def finalize_if_done() -> None:
     sim = st.session_state.active_simulator
-    if sim is None or st.session_state.ended:
+    if sim is None or st.session_state.ended or st.session_state.get("pending_prior_experience_survey", False):
         return
     done, why = sim.is_done()
     if done:
         report = enrich_report(sim.build_report(), end_reason=why)
-        out_dir = RUNS_DIR / st.session_state.session_id
-        json_path, md_path = save_report(report, str(out_dir))
-        if not st.session_state.get("result_saved", False):
-            save_result_record(report)
-            st.session_state.result_saved = True
-        st.session_state.ended = True
-        st.session_state.end_reason = why
-        st.session_state.last_report = report
-        st.session_state.last_report_paths = (json_path, md_path)
+        if _needs_baseline_post_survey(why):
+            st.session_state.baseline_performance_completed = True
+            st.session_state.pending_prior_experience_survey = True
+            st.session_state.pending_completion_reason = why
+            st.session_state.pending_report = report
+            st.session_state.last_report = report
+            return
+        if st.session_state.get("assessment_phase") == "基线评估":
+            st.session_state.baseline_stage_completed = True
+        _save_and_end_report(report, why)
 
 
 def profile_required_missing() -> List[str]:
@@ -1131,7 +1173,6 @@ def profile_required_missing() -> List[str]:
         "participant_id": "系统生成参与者编号",
         "nurse_level": "护理层级",
         "years_experience": "工作年限",
-        "prior_anaphylaxis_training": "既往过敏反应培训",
         "assessment_phase": "评估阶段",
     }
     missing = []
@@ -1234,32 +1275,14 @@ def render_participant_entry_page() -> None:
                 index=titles.index(st.session_state.professional_title) if st.session_state.professional_title in titles else 0,
             )
 
-            n4, n5, n6 = st.columns([1, 1, 1], gap="large")
+            n4, n5 = st.columns([1, 1], gap="large")
             edu_options = ["", "中专", "大专", "本科", "硕士及以上", "其他"]
             education_level = n4.selectbox(
                 "最高学历",
                 edu_options,
                 index=edu_options.index(st.session_state.education_level) if st.session_state.education_level in edu_options else 0,
             )
-            yn_options = ["", "是", "否", "不确定"]
-            prior_anaphylaxis_training = n5.selectbox(
-                "是否接受过过敏反应/过敏性休克培训（必填）",
-                yn_options,
-                index=yn_options.index(st.session_state.prior_anaphylaxis_training) if st.session_state.prior_anaphylaxis_training in yn_options else 0,
-            )
-            prior_simulation_experience = n6.selectbox(
-                "是否参加过模拟/虚拟仿真培训",
-                yn_options,
-                index=yn_options.index(st.session_state.prior_simulation_experience) if st.session_state.prior_simulation_experience in yn_options else 0,
-            )
-
-            n7, n8 = st.columns([1, 1], gap="large")
-            real_case_experience = n7.selectbox(
-                "是否处理过真实过敏反应病例",
-                yn_options,
-                index=yn_options.index(st.session_state.real_case_experience) if st.session_state.real_case_experience in yn_options else 0,
-            )
-            assessment_phase = n8.selectbox(
+            assessment_phase = n5.selectbox(
                 "评估阶段（必填）",
                 ASSESSMENT_PHASE_OPTIONS,
                 index=ASSESSMENT_PHASE_OPTIONS.index(st.session_state.assessment_phase)
@@ -1267,7 +1290,7 @@ def render_participant_entry_page() -> None:
             )
 
             st.markdown(
-                "<div class='form-note'>说明：项目编号与第几次测试不再由受试者填写；系统将在后台保留版本号、Session ID 和默认尝试序号用于数据追踪。</div>",
+                "<div class='form-note'>说明：项目编号与第几次测试不再由受试者填写；系统将在后台保留版本号、Session ID 和默认尝试序号用于数据追踪；既往培训/处置经历将在基线评估完成后补充采集。</div>",
                 unsafe_allow_html=True,
             )
 
@@ -1290,9 +1313,8 @@ def render_participant_entry_page() -> None:
             st.session_state.years_experience = years_experience
             st.session_state.professional_title = professional_title.strip()
             st.session_state.education_level = education_level.strip()
-            st.session_state.prior_anaphylaxis_training = prior_anaphylaxis_training.strip()
-            st.session_state.prior_simulation_experience = prior_simulation_experience.strip()
-            st.session_state.real_case_experience = real_case_experience.strip()
+            # 既往过敏反应培训/仿真培训/真实处理经历不在登记页采集，
+            # 仅在基线评估操作完成后以补充问卷形式采集一次，避免提示效应。
             st.session_state.training_batch = ""
             st.session_state.assessment_phase = assessment_phase.strip()
             workflow = workflow_for_phase(st.session_state.assessment_phase)
@@ -1312,7 +1334,7 @@ def render_participant_entry_page() -> None:
                 st.rerun()
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.2.6g 控制台")
+    st.sidebar.title("V1.2.7 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1976,9 +1998,9 @@ def render_intro() -> None:
     with right:
         st.container(border=True).markdown(
             """
-            **V1.2.6g 延迟计分与普通考核终止修正版**
+            **V1.2.7 模块边界评分与基线后补充问卷版**
 
-            本版在流程锁定基础上，采用25分标准路径：加入糖皮质激素剂量输入与计分，删除抗组胺药按钮，并将气道梗阻、球囊面罩加压给氧、高级支持、CPR作为条件性危重分支单独记录。系统按院区、科室和姓名首字母自动生成匿名参与者编号，并在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
+            本版在流程锁定基础上，采用100分模块边界评分：抢救启动和初始支持允许并行，首次肌注肾上腺素为核心分界点，肾上腺素后进入顺序化处理模块，并将气道梗阻、球囊面罩加压给氧、高级支持、CPR作为条件性危重分支单独记录。系统按院区、科室和姓名首字母自动生成匿名参与者编号，并在训练报告、Supabase 云端数据库和管理员导出表中记录护理层级、工作年限、院区、既往培训经历、评估阶段等字段。
 
             管理员后台仍支持三类导出：训练汇总CSV、操作明细CSV、完整JSONL。
             """
@@ -2045,7 +2067,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.2.6g 研究质控与导出增强版")
+    st.markdown("### 管理员后台｜V1.2.7 模块边界评分与研究质控导出版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -2318,6 +2340,91 @@ def render_steroid_dose_panel(sim: Simulator) -> bool:
 
 
 
+def render_prior_experience_survey() -> None:
+    """Collect prior-experience items only after baseline performance is locked."""
+    render_version_corner()
+    st.markdown("### 基线评估补充信息")
+    st.info("基线操作评估已完成。请继续完成以下补充信息；本部分不影响本次基线操作评分。")
+    yn_options = ["", "是", "否", "不确定"]
+    with st.form("baseline_post_experience_survey", clear_on_submit=False):
+        c1, c2, c3 = st.columns([1, 1, 1], gap="large")
+        prior_training = c1.selectbox(
+            "是否接受过过敏反应/过敏性休克相关培训（必填）",
+            yn_options,
+            index=yn_options.index(st.session_state.get("prior_anaphylaxis_training", ""))
+            if st.session_state.get("prior_anaphylaxis_training", "") in yn_options else 0,
+        )
+        prior_sim = c2.selectbox(
+            "是否参加过模拟培训或虚拟仿真培训（必填）",
+            yn_options,
+            index=yn_options.index(st.session_state.get("prior_simulation_experience", ""))
+            if st.session_state.get("prior_simulation_experience", "") in yn_options else 0,
+        )
+        real_case = c3.selectbox(
+            "是否处理过真实过敏反应病例（必填）",
+            yn_options,
+            index=yn_options.index(st.session_state.get("real_case_experience", ""))
+            if st.session_state.get("real_case_experience", "") in yn_options else 0,
+        )
+        submitted = st.form_submit_button("提交补充信息并结束基线评估", type="primary", use_container_width=True)
+
+    if submitted:
+        missing = []
+        if not prior_training:
+            missing.append("是否接受过相关培训")
+        if not prior_sim:
+            missing.append("是否参加过模拟/虚拟仿真培训")
+        if not real_case:
+            missing.append("是否处理过真实病例")
+        if missing:
+            st.error("请先完整填写：" + "、".join(missing))
+            return
+
+        st.session_state.prior_anaphylaxis_training = prior_training.strip()
+        st.session_state.prior_simulation_experience = prior_sim.strip()
+        st.session_state.real_case_experience = real_case.strip()
+        st.session_state.prior_experience_survey_completed = True
+        st.session_state.prior_experience_survey_time = datetime.now().isoformat(timespec="seconds")
+        st.session_state.baseline_stage_completed = True
+        st.session_state.pending_prior_experience_survey = False
+
+        why = st.session_state.get("pending_completion_reason", "standard_assessment_completed") or "standard_assessment_completed"
+        report = st.session_state.get("pending_report")
+        if not report and st.session_state.active_simulator is not None:
+            report = enrich_report(st.session_state.active_simulator.build_report(), end_reason=why)
+        elif report:
+            report = json.loads(json.dumps(report, ensure_ascii=False))
+            report["session"] = build_session_metadata(end_reason=why)
+            report["end_reason"] = why
+        if report is None:
+            st.error("未找到待保存的基线评估报告，请返回重新开始。")
+            return
+        report["baseline_post_survey"] = {
+            "completed": True,
+            "completed_time": st.session_state.prior_experience_survey_time,
+            "prior_anaphylaxis_training": st.session_state.prior_anaphylaxis_training,
+            "prior_simulation_experience": st.session_state.prior_simulation_experience,
+            "real_case_experience": st.session_state.real_case_experience,
+        }
+        _save_and_end_report(report, why)
+        st.session_state.pending_completion_reason = ""
+        st.session_state.pending_report = None
+        st.success("基线评估阶段已完成。")
+        st.rerun()
+
+
+def visible_actions_for_current_state(sim: Simulator) -> List[Dict[str, Any]]:
+    """Hide conditional rescue options until their branch is clinically active."""
+    visible: List[Dict[str, Any]] = []
+    flags = sim.state.flags
+    for action in sim.actions:
+        aid = action.get("id", "")
+        if aid == "repeat_epinephrine" and not flags.get("repeat_epi_indicated", False):
+            continue
+        visible.append(action)
+    return visible
+
+
 def render_simulation() -> None:
     sim: Simulator = st.session_state.active_simulator
     scenario: Dict[str, Any] = st.session_state.active_scenario
@@ -2327,6 +2434,9 @@ def render_simulation() -> None:
     compact_header()
 
     finalize_if_done()
+    if st.session_state.get("pending_prior_experience_survey", False):
+        render_prior_experience_survey()
+        return
     if st.session_state.ended:
         render_report()
         return
@@ -2381,7 +2491,7 @@ def render_simulation() -> None:
             volume_pending = render_fluid_bolus_panel(sim)
             steroid_pending = render_steroid_dose_panel(sim)
 
-            actions = sim.actions
+            actions = visible_actions_for_current_state(sim)
             option_cols = 4
             for idx in range(0, len(actions), option_cols):
                 row = st.columns(option_cols, gap="medium")
@@ -2485,6 +2595,18 @@ def render_report() -> None:
     c2.metric("最终分级", report.get("final_grade", ""))
     c3.metric("得分", f"{report.get('score')}/{report.get('max_score')}")
     c4.metric("扣分", report.get("penalties", 0))
+
+    module_summary = report.get("module_score_summary", {}) or {}
+    if module_summary:
+        st.markdown("**模块评分概览**")
+        st.table([
+            {
+                "模块": v.get("name", k),
+                "得分": f"{v.get('awarded_points', 0)}/{v.get('max_points', 0)}",
+                "完成率": f"{v.get('completion_percent', 0)}%",
+            }
+            for k, v in module_summary.items()
+        ])
 
     left, right = st.columns([1, 1])
     with left:

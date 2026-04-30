@@ -4,7 +4,7 @@
     "id": "peds_ward_anaphylaxis_iv_initial",
     "title": "儿科药物诱发过敏反应动态分支虚拟仿真｜初始版",
     "language": "zh-CN",
-    "version": "V1.2.6g",
+    "version": "V1.2.7-module-scoring-baseline-survey",
     "source_note": "基于V1.2.6f，新增标准流程延迟计分和普通考核终止条件：标准顺序满分，延迟完成给一半分向下取整，未完成不扣主分；完成两次复评、家属沟通和SBAR交接后普通考核结束。",
     "mode_defaults": {
       "coach": true,
@@ -13,7 +13,8 @@
     "script_role": "initial",
     "script_name": "initial",
     "display_name": "初始版",
-    "scoring_basis": "V1.2.6g: 25-point standard path; delayed standard actions receive half points rounded down; missing actions score 0 without subtraction; ordinary assessment ends after valid first reassessment + valid second reassessment + family communication + SBAR handoff."
+    "scoring_basis": "V1.2.6g: 25-point standard path; delayed standard actions receive half points rounded down; missing actions score 0 without subtraction; ordinary assessment ends after valid first reassessment + valid second reassessment + family communication + SBAR handoff.",
+    "scoring_model": "100-point module-boundary scoring: early parallel modules, first IM epinephrine as boundary, ordered post-epinephrine modules."
   },
   "patient": {
     "age_years": 3,
@@ -164,7 +165,7 @@
       "label": "停用可疑药物并保留通路",
       "category": "critical_source_control",
       "score": {
-        "points": 2,
+        "points": 10,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -180,7 +181,7 @@
       "label": "呼救",
       "category": "critical_team",
       "score": {
-        "points": 2,
+        "points": 10,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -194,7 +195,7 @@
       "label": "ABC评估",
       "category": "critical_assessment",
       "score": {
-        "points": 1,
+        "points": 3,
         "time_window_seconds": 99999
       },
       "effects": {}
@@ -204,7 +205,7 @@
       "label": "开放气道给氧",
       "category": "critical_airway",
       "score": {
-        "points": 2,
+        "points": 5,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -221,7 +222,7 @@
       "label": "体位管理",
       "category": "critical_support",
       "score": {
-        "points": 1,
+        "points": 4,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -239,7 +240,7 @@
       "label": "连接监护",
       "category": "critical_monitor",
       "score": {
-        "points": 1,
+        "points": 5,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -253,7 +254,7 @@
       "label": "测血压",
       "category": "critical_circulation",
       "score": {
-        "points": 1,
+        "points": 3,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -267,7 +268,7 @@
       "label": "肌注肾上腺素",
       "category": "critical_medication",
       "score": {
-        "points": 4,
+        "points": 25,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -299,7 +300,7 @@
       "label": "快速扩容",
       "category": "critical_circulation",
       "score": {
-        "points": 2,
+        "points": 8,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -319,7 +320,7 @@
       "label": "第一次复评",
       "category": "critical_reassessment",
       "score": {
-        "points": 1,
+        "points": 5,
         "time_window_seconds": 99999
       },
       "effects": {}
@@ -329,7 +330,7 @@
       "label": "雾化支扩",
       "category": "critical_respiratory_support",
       "score": {
-        "points": 1,
+        "points": 3,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -350,7 +351,7 @@
       "label": "糖皮质激素",
       "category": "critical_adjunct_medication",
       "score": {
-        "points": 5,
+        "points": 4,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -364,7 +365,7 @@
       "label": "第二次复评",
       "category": "critical_reassessment",
       "score": {
-        "points": 1,
+        "points": 5,
         "time_window_seconds": 99999
       },
       "effects": {}
@@ -374,7 +375,7 @@
       "label": "告知家属",
       "category": "communication",
       "score": {
-        "points": 0,
+        "points": 5,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -388,7 +389,7 @@
       "label": "SBAR交接",
       "category": "communication",
       "score": {
-        "points": 1,
+        "points": 5,
         "time_window_seconds": 99999
       },
       "effects": {
@@ -960,5 +961,11 @@
     "V1.2.6d": "心肺骤停后下一步若未选择CPR，或继续让时间流逝而未CPR，系统记录死亡事件并终止情景。",
     "V1.2.6f": "高级生命支持指征分为当前仍适用与历史曾触发；最终安全缺陷只依据当前仍适用状态，同时记录触发时间与原因。",
     "V1.2.6g": "标准流程按顺序满分；延迟完成给一半分向下取整；未完成不扣主分；普通考核以两次复评、家属沟通和SBAR交接为终止条件。"
+  },
+  "change_log": {
+    "V1.2.7": "模块边界评分版：普通路径总分100分；抢救启动和初始支持按模块评分；首次有效肌注肾上腺素为核心分界点；肾上腺素后按标准处理模块评分；再次肌注仅异常分支触发；基线后补充问卷由前端采集。"
+  },
+  "scoring_policy": {
+    "V1.2.7": "前期模块允许并行但有时间/阶段边界；肌注肾上腺素后进入顺序评分；越过模块边界的补做不再补分或仅给延迟半分。"
   }
 }

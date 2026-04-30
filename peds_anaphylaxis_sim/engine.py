@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (V1.2.6g delayed scoring and standard assessment stop)
+Pediatric Ward Anaphylaxis Simulator (V1.2.7 module-boundary scoring and baseline-post survey)
 
-特点（V1.2.6g）：
+特点（V1.2.7）：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
 - 操作菜单：仅显示“操作名称”，不提供引导性措辞
-- 自动评分：标准顺序满分；延迟完成给一半分向下取整；未完成不扣主分
+- 自动评分：前期模块化并行评分；首次肌注肾上腺素为核心分界点；肾上腺素后按模块边界顺序评分；延迟给半分，越过模块边界不再补分
 - 报告突出“过程性安全缺陷”（如未呼救/未给氧/未监护/未测血压/复评不足）
-- 普通考核结束：有效第一次复评 + 有效第二次复评 + 告知家属 + SBAR交接
+- 普通考核结束：有效第一次复评 + 有效第二次复评 + 告知家属 + SBAR交接；基线阶段可接入基线后补充问卷
 
 声明：
 - 仅用于教学与科研可行性验证，不可用于临床决策。
@@ -98,10 +98,47 @@ class Simulator:
             rnd.shuffle(self.actions)
         self.action_order_labels = [a.get("id", "") for a in self.actions]
 
-        # V1.2.6g: standard-flow scoring order. A standard action completed
-        # after any later standard action is considered delayed and receives
-        # half of its available points, rounded down. Missing standard actions
-        # receive 0 and do not subtract from the main score.
+        # V1.2.7: module-boundary scoring. Boundaries are used for
+        # scoring and timing attribution, not as hard UI locks. Early actions
+        # may be completed in parallel; the first effective IM epinephrine is
+        # the main transition point into ordered post-epinephrine management.
+        self.module_scoring = {
+            "module1_rescue_activation": {
+                "name": "抢救启动模块",
+                "max_points": 20,
+                "actions": ["stop_infusion", "call_help"],
+                "boundary": "病例开始后0-60秒为按时，61-120秒为延迟，超过120秒不再补分。",
+            },
+            "module2_initial_support_assessment": {
+                "name": "初始支持与评估模块",
+                "max_points": 20,
+                "actions": ["abc_assess", "high_flow_oxygen", "shock_position", "connect_monitor", "check_bp"],
+                "boundary": "首次有效肌注肾上腺素前为按时；肌注后至第一次有效复评前为延迟；第一次有效复评后不再补分。",
+            },
+            "module3_first_im_epinephrine": {
+                "name": "首次肌注肾上腺素关键模块",
+                "max_points": 25,
+                "actions": ["im_epinephrine"],
+                "boundary": "药物、途径和剂量正确后计分，并作为前后流程分界点。",
+            },
+            "module4_post_epinephrine_management": {
+                "name": "肾上腺素后标准处理模块",
+                "max_points": 20,
+                "actions": ["fluid_bolus", "reassess_first", "bronchodilator", "steroid"],
+                "boundary": "首次有效肌注肾上腺素后开始，快速补液和第一次复评优先，辅助治疗位于第一次复评后。",
+            },
+            "module5_reassessment_handoff_communication": {
+                "name": "复评、交班与沟通模块",
+                "max_points": 15,
+                "actions": ["reassess_second", "family_explain", "sbar_handoff"],
+                "boundary": "第一次有效复评且病情改善后开放，第二次复评、家属沟通和SBAR完成后普通考核结束。",
+            },
+        }
+        self.action_module_map = {
+            aid: module_id
+            for module_id, meta in self.module_scoring.items()
+            for aid in meta.get("actions", [])
+        }
         self.standard_flow_order = {
             "stop_infusion": 1,
             "call_help": 2,
@@ -510,43 +547,146 @@ class Simulator:
         return aliases.get(action_id, action_id)
 
     def _is_delayed_standard_action(self, action_id: str) -> bool:
-        """A standard action is delayed if a later standard-flow action has
-        already been attempted before this action is scored. Early completion
-        is not penalized; late completion earns half points rounded down.
+        """Backward-compatible helper for older callers.
+
+        V1.2.7 uses module-boundary scoring. This helper reports whether an
+        action would receive delayed half-score under the current module rules.
         """
+        _gained, status, _reason = self._module_score_adjustment(action_id, 1)
+        return status == "delayed"
+
+    def _later_standard_action_attempted(self, action_id: str, later_ids: List[str]) -> bool:
+        canonical_later = {self._standard_score_action_id(x) for x in later_ids}
+        for aid in self.action_first_time:
+            if self._standard_score_action_id(aid) in canonical_later:
+                return True
+        return False
+
+    def _module_score_adjustment(self, action_id: str, points: int) -> Tuple[int, str, str]:
+        """Return awarded points, status, and reason using V1.2.7 module boundaries.
+
+        Status values:
+        - full: full module score
+        - delayed: half score, rounded down
+        - no_score: completed outside the accepted scoring boundary
+        """
+        points = int(points)
+        if points <= 0:
+            return 0, "no_score", "该动作未设置普通路径分值。"
+
         canonical = self._standard_score_action_id(action_id)
+        f = self.state.flags
+        t = int(self.state.t)
+
+        module1 = {"stop_infusion", "call_help"}
+        module2 = {"abc_assess", "high_flow_oxygen", "shock_position", "connect_monitor", "check_bp"}
+        module4_aux = {"bronchodilator", "steroid"}
+
+        if canonical in module1:
+            if t <= 60:
+                return points, "full", "抢救启动模块60秒内完成。"
+            if t <= 120:
+                return max(0, points // 2), "delayed", "抢救启动模块61-120秒完成，按延迟半分。"
+            return 0, "no_score", "超过抢救启动模块120秒评分边界，不再补分。"
+
+        if canonical in module2:
+            if not f.get("epi_im_given", False):
+                return points, "full", "首次有效肌注肾上腺素前完成初始支持/评估。"
+            if not f.get("first_reassessment_done", False):
+                return max(0, points // 2), "delayed", "肌注肾上腺素后、第一次有效复评前补做，按延迟半分。"
+            return 0, "no_score", "第一次有效复评后才补做初始支持/评估，不再补分。"
+
+        if canonical == "im_epinephrine":
+            if self._later_standard_action_attempted(canonical, ["fluid_bolus", "reassess_first", "bronchodilator", "steroid", "reassess_second", "family_explain", "sbar_handoff"]):
+                return max(0, points // 2), "delayed", "肾上腺素在后续处理之后才完成，按延迟半分。"
+            return points, "full", "首次肌注肾上腺素作为核心分界点完成。"
+
+        if canonical == "fluid_bolus":
+            if not f.get("epi_im_given", False):
+                return 0, "no_score", "未先完成有效肌注肾上腺素，快速补液不计入标准顺序分。"
+            if f.get("first_reassessment_done", False):
+                return max(0, points // 2), "delayed", "第一次有效复评后才补做快速补液，按延迟半分。"
+            return points, "full", "肌注肾上腺素后、第一次复评前完成快速补液。"
+
+        if canonical == "reassess_first":
+            if self._later_standard_action_attempted(canonical, ["bronchodilator", "steroid", "reassess_second", "family_explain", "sbar_handoff"]):
+                return max(0, points // 2), "delayed", "第一次复评晚于后续处理，按延迟半分。"
+            return points, "full", "快速补液后完成第一次有效复评。"
+
+        if canonical in module4_aux:
+            if not (f.get("epi_im_given", False) and f.get("fluid_bolus_valid", False)):
+                return 0, "no_score", "未完成肾上腺素和有效快速补液前，辅助治疗不计入标准模块分。"
+            if not f.get("first_reassessment_done", False):
+                return max(0, points // 2), "delayed", "第一次有效复评前提前完成辅助治疗，按延迟半分。"
+            if f.get("second_reassessment_done", False):
+                return max(0, points // 2), "delayed", "第二次复评后才补做辅助治疗，按延迟半分。"
+            return points, "full", "第一次复评后完成相应辅助治疗。"
+
+        if canonical == "reassess_second":
+            if not f.get("first_reassessment_done", False):
+                return 0, "no_score", "第一次有效复评前不能计入第二次复评分。"
+            if f.get("family_communication", False):
+                return 0, "no_score", "家属沟通后才进行第二次复评，不计入告知前复评分。"
+            return points, "full", "第一次复评后、家属沟通前完成第二次复评。"
+
+        if canonical == "family_explain":
+            if not f.get("second_reassessment_done", False):
+                return 0, "no_score", "第二次有效复评前的家属沟通仅记录，不计入标准收尾分。"
+            return points, "full", "第二次复评后完成家属沟通。"
+
+        if canonical == "sbar_handoff":
+            if not (f.get("second_reassessment_done", False) and f.get("family_communication", False)):
+                return 0, "no_score", "第二次复评和家属沟通前的SBAR仅记录，不计入标准收尾分。"
+            return points, "full", "第二次复评和家属沟通后完成SBAR交接。"
+
+        # Fallback for legacy standard actions not explicitly mapped above.
         order = getattr(self, "standard_flow_order", {})
         if canonical not in order:
-            return False
+            return points, "full", "非模块映射动作，按原始分值处理。"
         idx = int(order[canonical])
         for aid in self.action_first_time:
             other = self._standard_score_action_id(aid)
             if other != canonical and other in order and int(order[other]) > idx:
-                return True
-        return False
+                return max(0, points // 2), "delayed", "晚于后续标准动作完成，按延迟半分。"
+        return points, "full", "按标准顺序完成。"
 
-    def _apply_delay_rule(self, action_id: str, points: int) -> Tuple[int, bool]:
-        points = int(points)
-        delayed = self._is_delayed_standard_action(action_id)
-        if points <= 0:
-            return 0, delayed
-        return (max(0, points // 2), True) if delayed else (points, False)
+    def _apply_delay_rule(self, action_id: str, points: int) -> Tuple[int, str, str]:
+        return self._module_score_adjustment(action_id, int(points))
+
+    def _record_score_award(self, score_key: str, action_id: str, max_points: int, gained: int, status: str, reason: str) -> None:
+        canonical = self._standard_score_action_id(action_id or score_key)
+        self.state.flags.setdefault("score_awards", [])
+        self.state.flags["score_awards"].append({
+            "t": int(self.state.t),
+            "module_id": self.action_module_map.get(canonical, ""),
+            "score_key": score_key,
+            "action_id": canonical,
+            "max_points": int(max_points),
+            "awarded_points": int(gained),
+            "status": status,
+            "reason": reason,
+        })
+        if status == "delayed":
+            self.state.flags.setdefault("delayed_actions", [])
+            self.state.flags["delayed_actions"].append(canonical)
+        elif status == "no_score" and int(max_points) > 0:
+            self.state.flags.setdefault("out_of_boundary_actions", [])
+            self.state.flags["out_of_boundary_actions"].append(canonical)
 
     def _award_points_once(self, score_key: str, points: int, action_id: Optional[str] = None) -> int:
-        """Award points once; V1.2.6g applies standard-flow delayed scoring."""
+        """Award points once using V1.2.7 module-boundary scoring."""
         if points <= 0:
             return 0
         flag = f"_score_awarded_{score_key}"
         if self.state.flags.get(flag, False):
             return 0
-        gained, delayed = self._apply_delay_rule(action_id or score_key, int(points))
+        score_action = action_id or score_key
+        gained, status, reason = self._apply_delay_rule(score_action, int(points))
         self.score += int(gained)
         if self.score > self.max_score:
             self.score = self.max_score
         self.state.flags[flag] = True
-        if delayed:
-            self.state.flags.setdefault("delayed_actions", [])
-            self.state.flags["delayed_actions"].append(action_id or score_key)
+        self._record_score_award(score_key, score_action, int(points), int(gained), status, reason)
         return int(gained)
 
     def _award_action_score(self, action_id: str, action: Dict[str, Any], first_time: bool) -> int:
@@ -554,13 +694,11 @@ class Simulator:
         points = int(sc.get("points", 0))
         if not first_time or points <= 0:
             return 0
-        gained, delayed = self._apply_delay_rule(action_id, points)
+        gained, status, reason = self._apply_delay_rule(action_id, points)
         self.score += gained
         if self.score > self.max_score:
             self.score = self.max_score
-        if delayed:
-            self.state.flags.setdefault("delayed_actions", [])
-            self.state.flags["delayed_actions"].append(action_id)
+        self._record_score_award(action_id, action_id, points, gained, status, reason)
         return gained
 
     def _apply_action_effects_only(self, action_id: str) -> None:
@@ -928,16 +1066,23 @@ class Simulator:
             return
 
         if action_id == "family_explain":
-            first_time = self._first_attempt(action_id)
+            self._first_attempt(action_id)
             self.apply_effects(action.get("effects", {}))
-            if not self.state.flags.get("second_reassessment_done", False):
+            if self.state.flags.get("second_reassessment_done", False):
+                gained = self._award_points_once("family_explain", int(action.get("score", {}).get("points", 0)), "family_explain")
+                status = "valid"
+                result = "第二次复评后完成家属沟通，计入收尾模块得分。"
+            else:
                 self.state.flags["family_before_second_reassess"] = True
+                gained = 0
+                status = "conditional_not_met"
+                result = "已记录家属告知；但发生在第二次复评之前，不计入标准收尾分。"
             self._refresh_process_flags()
             self._log("action", action_id, {
                 "label": action.get("label", ""),
-                "gained": 0,
-                "status": "recorded",
-                "result": "已记录家属告知" + ("；但发生在第二次复评之前" if self.state.flags.get("family_before_second_reassess", False) else "")
+                "gained": gained,
+                "status": status,
+                "result": result,
             })
             return
 
@@ -947,13 +1092,13 @@ class Simulator:
             valid = self.state.flags.get("family_communication", False) and self.state.flags.get("second_reassessment_done", False)
             if valid:
                 self.state.flags["family_sbar_completed"] = True
-                gained = self._award_points_once("family_sbar", int(action.get("score", {}).get("points", 0)), "sbar_handoff")
+                gained = self._award_points_once("sbar_handoff", int(action.get("score", {}).get("points", 0)), "sbar_handoff")
                 status = "valid"
-                result = "告知家属后完成SBAR交接，计入沟通交接得分。"
+                result = "第二次复评和家属沟通后完成SBAR交接，计入收尾模块得分。"
             else:
                 gained = 0
                 status = "conditional_not_met"
-                result = "已记录SBAR交接；需在第二次复评和家属告知后完成，才计入沟通交接得分。"
+                result = "已记录SBAR交接；需在第二次复评和家属告知后完成，才计入标准收尾分。"
             self._refresh_process_flags()
             self._log("action", action_id, {"label": action.get("label", ""), "gained": gained, "status": status, "result": result})
             return
@@ -1250,11 +1395,27 @@ class Simulator:
                 "max_ml": max_ml,
             }
 
+        if not self.state.flags.get("epi_im_given", False):
+            self.state.flags["fluid_without_epi"] = True
+            self.state.flags["fluid_bolus_valid"] = False
+            self._log("action", "fluid_bolus_before_epinephrine", {
+                "volume_ml": round(volume, 1),
+                "min_ml": min_ml,
+                "max_ml": max_ml,
+                "gained": 0,
+                "result": "used_before_first_line_epinephrine"
+            })
+            return {
+                "status": "timing_error",
+                "message": "已记录补液操作，但尚未完成有效肌注肾上腺素。普通评分路径要求肌注肾上腺素后再进行快速补液，本次不计入有效快速补液。",
+                "volume_ml": volume,
+                "min_ml": min_ml,
+                "max_ml": max_ml,
+            }
+
         if volume < min_ml:
             self.state.flags["fluid_bolus_under"] = True
             self.state.flags["fluid_bolus_valid"] = False
-            if not self.state.flags.get("epi_im_given", False):
-                self.state.flags["fluid_without_epi"] = True
             self._log("action", "fluid_bolus_under", {"volume_ml": round(volume, 1), "min_ml": min_ml, "max_ml": max_ml, "gained": 0, "result": "insufficient_volume"})
             return {
                 "status": "under",
@@ -1279,8 +1440,6 @@ class Simulator:
             }
 
         self.state.flags["fluid_bolus_valid"] = True
-        if not self.state.flags.get("epi_im_given", False):
-            self.state.flags["fluid_without_epi"] = True
         self._apply_action_effects_only(action_id)
         gained = self._award_points_once("fluid_bolus", int(action.get("score", {}).get("points", 0)), "fluid_bolus")
         self._log("action", "fluid_bolus_volume_verified", {
@@ -1343,26 +1502,18 @@ class Simulator:
         if dose > max_mg:
             f["steroid_over"] = True
 
-        base_gained = 0
-        if timing_valid:
-            base_gained += 2
-        if after_epi:
-            base_gained += 1
-        if dose_valid:
-            base_gained += 2
-        gained, delayed_steroid = self._apply_delay_rule("steroid", base_gained)
-        if not f.get("_score_awarded_steroid", False):
+        f["steroid_valid"] = bool(timing_valid and after_epi and dose_valid)
+        base_points = int(action.get("score", {}).get("points", 0)) if f["steroid_valid"] else 0
+        if not f.get("_score_awarded_steroid", False) and base_points > 0:
+            gained, status_score, reason_score = self._apply_delay_rule("steroid", base_points)
             self.score += int(gained)
             if self.score > self.max_score:
                 self.score = self.max_score
             f["_score_awarded_steroid"] = True
-            if delayed_steroid and gained > 0:
-                f.setdefault("delayed_actions", [])
-                f["delayed_actions"].append("steroid")
+            self._record_score_award("steroid", "steroid", base_points, int(gained), status_score, reason_score)
         else:
             gained = 0
 
-        f["steroid_valid"] = bool(timing_valid and after_epi and dose_valid)
         if f["steroid_valid"]:
             # Steroids are scored as an adjunct and dose-calculation item. They
             # should not immediately lower HR/RR or raise BP/SpO2 like
@@ -1541,6 +1692,24 @@ class Simulator:
             issues.append("心肺骤停后下一步未选择CPR，已记录死亡事件")
         return issues
 
+    def _module_score_summary(self) -> Dict[str, Any]:
+        awards = list(self.state.flags.get("score_awards", []) or [])
+        summary: Dict[str, Any] = {}
+        for module_id, meta in self.module_scoring.items():
+            module_awards = [a for a in awards if a.get("module_id") == module_id]
+            awarded = int(sum(int(a.get("awarded_points", 0) or 0) for a in module_awards))
+            max_points = int(meta.get("max_points", 0) or 0)
+            summary[module_id] = {
+                "name": meta.get("name", module_id),
+                "max_points": max_points,
+                "awarded_points": min(awarded, max_points),
+                "completion_percent": round(min(awarded, max_points) / max_points * 100, 1) if max_points else 0,
+                "boundary": meta.get("boundary", ""),
+                "actions": meta.get("actions", []),
+                "awards": module_awards,
+            }
+        return summary
+
     def build_report(self) -> Dict[str, Any]:
         grade_map = {1: "I", 2: "II", 3: "III", 4: "IV"}
         critical_actions = [a for a in self.actions if a.get("category", "").startswith("critical")]
@@ -1603,6 +1772,7 @@ class Simulator:
             "max_score": self.max_score,
             "critical_missing": missing,
             "process_safety_issues": self._process_safety_issues(),
+            "module_score_summary": self._module_score_summary(),
             "clinical_pathway_flags": {
                 "initial_circulation_support_complete": bool(f.get("initial_circulation_support_complete", False)),
                 "repeat_epi_indicated": bool(f.get("repeat_epi_indicated", False)),
@@ -1631,6 +1801,8 @@ class Simulator:
                 "ordinary_exam_terminal": bool(f.get("ordinary_exam_terminal", False)),
                 "standard_pathway_full_score": bool(f.get("standard_pathway_full_score", False)),
                 "delayed_actions": list(f.get("delayed_actions", []) or []),
+                "out_of_boundary_actions": list(f.get("out_of_boundary_actions", []) or []),
+                "score_awards": list(f.get("score_awards", []) or []),
                 "steroid_valid": bool(f.get("steroid_valid", False)),
                 "airway_obstruction_triggered": bool(f.get("airway_obstruction_triggered", False)),
                 "bvm_required": bool(f.get("bvm_required", False)),
