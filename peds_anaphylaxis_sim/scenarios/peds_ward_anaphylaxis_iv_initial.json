@@ -4,8 +4,8 @@
     "id": "peds_ward_anaphylaxis_iv_initial",
     "title": "儿科药物诱发过敏反应动态分支虚拟仿真｜初始版",
     "language": "zh-CN",
-    "version": "V1.2.7-module-scoring-baseline-survey",
-    "source_note": "基于V1.2.6f，新增标准流程延迟计分和普通考核终止条件：标准顺序满分，延迟完成给一半分向下取整，未完成不扣主分；完成两次复评、家属沟通和SBAR交接后普通考核结束。",
+    "version": "V1.2.9-research-ready",
+    "source_note": "基于V1.2.8，新增考试记录无提示、主动确认完成抢救、静脉通路补救、正常体温、按年龄公式生成体重、肾上腺素分项评分与收尾有效性修正。",
     "mode_defaults": {
       "coach": true,
       "tick_seconds": 30
@@ -13,14 +13,15 @@
     "script_role": "initial",
     "script_name": "initial",
     "display_name": "初始版",
-    "scoring_basis": "V1.2.6g: 25-point standard path; delayed standard actions receive half points rounded down; missing actions score 0 without subtraction; ordinary assessment ends after valid first reassessment + valid second reassessment + family communication + SBAR handoff.",
-    "scoring_model": "100-point module-boundary scoring: early parallel modules, first IM epinephrine as boundary, ordered post-epinephrine modules."
+    "scoring_basis": "V1.2.9: missing required steps score 0 when participant confirms rescue completion; IV re-establishment after erroneous IV removal recovers half of the recorded IV-removal penalty.",
+    "scoring_model": "100-point module-boundary scoring with 25-point epinephrine subcomponents and valid-completion timelines."
   },
   "patient": {
     "age_years": 3,
-    "weight_kg": 15,
+    "weight_kg": 14,
     "setting": "儿科普通病区（床旁）",
-    "trigger": "静脉输注药物开始后约5-10分钟出现症状"
+    "trigger": "静脉输注药物开始后约5-10分钟出现症状",
+    "weight_formula": "1-6岁: 年龄×2+8 kg; 7-11岁: 年龄×3+2 kg"
   },
   "diagnosis_criteria": {
     "criterion_1": "皮肤/黏膜症状 +（呼吸道症状 或 血压下降/器官功能不全 或 严重胃肠道症状）",
@@ -46,7 +47,7 @@
       "RR": 28,
       "SBP": 102,
       "DBP": 62,
-      "Temp": 37.8
+      "Temp": 36.8
     },
     "symptoms": {
       "rash": 1,
@@ -327,7 +328,7 @@
     },
     {
       "id": "bronchodilator",
-      "label": "雾化支扩",
+      "label": "雾化支气管扩张剂",
       "category": "critical_respiratory_support",
       "score": {
         "points": 3,
@@ -539,10 +540,26 @@
       },
       "effects": {
         "set_flags": {
-          "iv_access": false
+          "iv_access": false,
+          "iv_removed": true,
+          "iv_access_removed": true
         },
         "delta_vitals": {
           "HR": 4
+        }
+      }
+    },
+    {
+      "id": "establish_iv",
+      "label": "建立静脉通路",
+      "category": "rescue_remediation",
+      "score": {
+        "points": 0,
+        "time_window_seconds": 99999
+      },
+      "effects": {
+        "set_flags": {
+          "iv_access": true
         }
       }
     },
@@ -918,7 +935,7 @@
         "done_when": "flags.first_reassessment_done"
       },
       {
-        "text": "步骤11：若仍有咳嗽/喘息，给予雾化支扩。",
+        "text": "步骤11：若仍有咳嗽/喘息，给予雾化支气管扩张剂。",
         "reason": "仍有咳嗽/喘息或支气管痉挛表现时，可给予雾化支气管扩张剂。",
         "done_when": "flags.bronchodilator_neb"
       },

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.7 module-boundary scoring and baseline-post survey
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.9 research-ready
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -9,7 +9,7 @@
 - 当生命体征、临床表现或分级发生变化时，相关卡片自动闪动提示；
 - 训练模式保留步骤提示与原因说明；考试模式仅保留干净操作界面；
 - 肌注肾上腺素需输入剂量，系统按体重核对 0.01 mg/kg 与 0.3 mg 上限。
-- 每次开始/重置模拟时自动随机生成年龄与体重：年龄 2-11 岁，体重 10-35 kg。
+- 每次开始/重置模拟时自动随机生成年龄，体重按年龄公式生成：1–6岁=年龄×2+8；7–11岁=年龄×3+2。
 - 按模块边界校准评分与动态演化：普通路径总分100分。
 - V1.0新增：访问码、单位/科室/参与者编号、自动保存结果、管理员导出CSV、操作历史即时显示。
 - V1.1新增：接入Supabase云端数据库，训练结束后自动写入training_records表，管理员后台可从数据库读取并导出。
@@ -42,14 +42,14 @@ import streamlit as st
 from peds_anaphylaxis_sim.engine import Simulator, load_scenario, save_report
 
 
-APP_TITLE = "儿科护理急救动态分支虚拟仿真训练平台"
+APP_TITLE = "儿科护理虚拟仿真训练与评估平台"
 APP_SUBTITLE = "Dynamic Branching Virtual Simulation Platform for Pediatric Nursing Emergency Training"
 ROOT = Path(__file__).resolve().parent
 SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.8 registration-clean, no-hint intro and auto-return"
+APP_VERSION = "V1.2.9 research-ready, clean exam log and manual completion"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -185,10 +185,14 @@ def randomize_patient_profile(scenario: Dict[str, Any]) -> Dict[str, Any]:
     rng = random.SystemRandom()
     randomized = json.loads(json.dumps(scenario, ensure_ascii=False))
     patient = randomized.setdefault("patient", {})
-    patient["age_years"] = rng.randint(2, 11)
-    patient["weight_kg"] = rng.randint(10, 35)
+    age = rng.randint(1, 11)
+    weight = age * 2 + 8 if 1 <= age <= 6 else age * 3 + 2
+    patient["age_years"] = age
+    patient["weight_kg"] = weight
     patient["randomized_profile"] = True
-    patient["randomization_rule"] = "age_years: 2-11; weight_kg: 10-35"
+    patient["randomization_rule"] = "age_years: 1-11; weight_kg formula: 1-6y=age*2+8, 7-11y=age*3+2"
+    patient["weight_formula"] = "1-6岁: 年龄×2+8 kg; 7-11岁: 年龄×3+2 kg"
+    randomized.setdefault("baseline", {}).setdefault("vitals", {})["Temp"] = 36.8
     return randomized
 
 
@@ -481,6 +485,13 @@ def flatten_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "raw_score": report.get("raw_score", ""),
         "penalties": report.get("penalties", ""),
         "max_score": report.get("max_score", ""),
+        "manual_rescue_completion": (report.get("clinical_pathway_flags", {}) or {}).get("manual_rescue_completion", ""),
+        "unfinished_required_steps": "；".join(map(str, (report.get("clinical_pathway_flags", {}) or {}).get("unfinished_required_steps", []) or [])),
+        "completion_rate_at_manual_finish": (report.get("clinical_pathway_flags", {}) or {}).get("completion_rate_at_manual_finish", ""),
+        "iv_removed": (report.get("clinical_pathway_flags", {}) or {}).get("iv_removed", ""),
+        "iv_access_reestablished": (report.get("clinical_pathway_flags", {}) or {}).get("iv_access_reestablished", ""),
+        "iv_rescue_credit": (report.get("clinical_pathway_flags", {}) or {}).get("iv_rescue_credit", ""),
+        "epinephrine_subscores": json.dumps((report.get("clinical_pathway_flags", {}) or {}).get("epinephrine_subscores", {}) or {}, ensure_ascii=False),
         "reassess_count": timeline.get("reassess_count", ""),
         "epi_last_dose_mg": timeline.get("epi_last_dose_mg", ""),
         "epi_target_dose_mg": timeline.get("epi_target_dose_mg", ""),
@@ -765,7 +776,7 @@ ACTION_LABELS_CN = {
     "fluid_bolus_over": "补液量过量",
     "fluid_bolus_invalid_no_iv": "补液无有效通路",
     "reassess_first": "第一次复评",
-    "bronchodilator": "雾化支扩",
+    "bronchodilator": "雾化支气管扩张剂",
     "reassess_second": "第二次复评",
     "family_explain": "告知家属",
     "sbar_handoff": "SBAR交接",
@@ -782,6 +793,7 @@ ACTION_LABELS_CN = {
     "steroid_dose_issue": "糖皮质激素剂量/时机问题",
     "continue_infusion": "继续输注可疑药物",
     "remove_iv": "拔除静脉通路",
+    "establish_iv": "建立静脉通路",
     "sedation": "镇静药",
     "im_epinephrine_dose_verified": "肌注肾上腺素剂量确认",
     "im_epinephrine_underdose": "肌注肾上腺素剂量不足",
@@ -899,6 +911,7 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
     patient = report.get("patient", {}) or {}
     timeline = report.get("key_timeline", {}) or {}
     final_vitals = report.get("final_vitals", {}) or {}
+    flags = report.get("clinical_pathway_flags", {}) or {}
     issues = _issue_text(report)
     missing = _missing_text(report)
 
@@ -925,6 +938,13 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
         "raw_score": report.get("raw_score", ""),
         "penalties": report.get("penalties", ""),
         "max_score": report.get("max_score", ""),
+        "manual_rescue_completion": flags.get("manual_rescue_completion", ""),
+        "unfinished_required_steps": "；".join(map(str, flags.get("unfinished_required_steps", []) or [])),
+        "completion_rate_at_manual_finish": flags.get("completion_rate_at_manual_finish", ""),
+        "iv_removed": flags.get("iv_removed", ""),
+        "iv_access_reestablished": flags.get("iv_access_reestablished", ""),
+        "iv_rescue_credit": flags.get("iv_rescue_credit", ""),
+        "epinephrine_subscores": json.dumps(flags.get("epinephrine_subscores", {}) or {}, ensure_ascii=False),
         "score_percent": round(score / max_score * 100, 1) if max_score else "",
         "reassess_count": timeline.get("reassess_count", ""),
         "action_count": sum(1 for e in _get_logs(report) if e.get("kind") == "action" and e.get("message") != "penalty"),
@@ -1375,7 +1395,7 @@ def render_participant_entry_page() -> None:
                 st.rerun()
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.2.8 控制台")
+    st.sidebar.title("V1.2.9 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1933,14 +1953,20 @@ def compact_action_label(label: str, max_chars: int = 24) -> str:
 
 
 def render_top_status(sim: Simulator, changes: Dict[str, Any]) -> None:
-    score_text = f"{sim.score}/{sim.max_score}"
     action_count = sum(1 for e in sim.log if e.kind == "action" and e.message != "penalty")
-    items = [
-        ("时间", f"{sim.state.t}s", False),
-        ("得分", score_text, bool(changes.get("score"))),
-        ("有效复评", str(int(sim.state.flags.get("reassess_count", 0))), bool(changes.get("reassess"))),
-        ("操作数", str(action_count), False),
-    ]
+    if sim.mode == "coach":
+        score_text = f"{sim.score}/{sim.max_score}"
+        items = [
+            ("时间", f"{sim.state.t}s", False),
+            ("得分", score_text, bool(changes.get("score"))),
+            ("有效复评", str(int(sim.state.flags.get("reassess_count", 0))), bool(changes.get("reassess"))),
+            ("操作数", str(action_count), False),
+        ]
+    else:
+        items = [
+            ("时间", f"{sim.state.t}s", False),
+            ("操作数", str(action_count), False),
+        ]
     html_items = []
     for label, value, changed in items:
         html_items.append(
@@ -2079,27 +2105,31 @@ def require_app_access() -> bool:
 
 def render_action_history(sim: Simulator) -> None:
     rows = get_action_history_rows(sim)
+    exam_clean = sim.mode != "coach"
     if not rows:
+        empty_text = "" if exam_clean else "当前尚未执行任何操作。每次点击选项后，操作记录会显示在这里。"
         st.markdown(
             "<div class='history-panel'>"
             "<div class='history-title'>已执行操作</div>"
-            "<div class='history-empty'>当前尚未执行任何操作。每次点击选项后，操作记录会显示在这里。</div>"
+            f"<div class='history-empty'>{html.escape(empty_text)}</div>"
             "</div>",
             unsafe_allow_html=True,
         )
         return
     html_rows = []
     for row in rows[-12:]:
+        result_html = "" if exam_clean else f"<div class='history-result'>{html.escape(str(row.get('结果','')))}</div>"
         html_rows.append(
             "<div class='history-item'>"
             f"<div class='history-time'>{html.escape(str(row.get('时间','')))}</div>"
             f"<div class='history-action'>{html.escape(str(row.get('操作','')))}</div>"
-            f"<div class='history-result'>{html.escape(str(row.get('结果','')))}</div>"
+            f"{result_html}"
             "</div>"
         )
+    title = f"已执行操作（{len(rows)}项）" if not exam_clean else "已执行操作"
     st.markdown(
         "<div class='history-panel'>"
-        f"<div class='history-title'>已执行操作（{len(rows)}项）</div>"
+        f"<div class='history-title'>{html.escape(title)}</div>"
         "<div class='history-list'>" + "".join(html_rows) + "</div>"
         "</div>",
         unsafe_allow_html=True,
@@ -2108,7 +2138,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.2.8 模块边界评分与研究质控导出版")
+    st.markdown("### 管理员后台｜V1.2.9 研究采集逻辑修正版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -2250,10 +2280,11 @@ def render_epinephrine_dose_panel(sim: Simulator) -> bool:
     target_mg = round(min(0.01 * weight, 0.3), 3)
     max_single_mg = 0.3
     title = "再次肌注肾上腺素：请输入本次总剂量" if pending_id == "repeat_epinephrine" else "肌注肾上腺素：请输入本次总剂量"
+    dose_help = "单位为 mg。确认后系统会按情景规则判断剂量是否有效。" if sim.mode == "coach" else "单位为 mg。"
     st.markdown(
         "<div class='dose-card'>"
         f"<div class='title'>{html.escape(title)}</div>"
-        "<div class='text'>单位为 mg。确认后系统会按情景规则判断剂量是否有效。</div>"
+        f"<div class='text'>{html.escape(dose_help)}</div>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -2273,8 +2304,8 @@ def render_epinephrine_dose_panel(sim: Simulator) -> bool:
     c_ok, c_cancel = st.columns([1, 1], gap="medium")
     if c_ok.button("确认剂量并执行", type="primary", use_container_width=True):
         result = sim.apply_epinephrine_dose(float(dose_mg), action_id=pending_id)
-        st.session_state.last_dose_feedback = str(result.get("message", ""))
-        st.session_state.last_dose_feedback_level = str(result.get("status", ""))
+        st.session_state.last_dose_feedback = str(result.get("message", "")) if sim.mode == "coach" else ""
+        st.session_state.last_dose_feedback_level = str(result.get("status", "")) if sim.mode == "coach" else ""
         st.session_state.pending_dose_action_id = ""
         st.session_state.pending_dose_action_label = ""
         sim.tick()
@@ -2296,10 +2327,11 @@ def render_fluid_bolus_panel(sim: Simulator) -> bool:
     weight = float(getattr(sim.state, "weight_kg", 0) or 0)
     min_ml = round(10 * weight, 1)
     max_ml = round(min(20 * weight, 500), 1)
+    fluid_help = "单位为 ml。确认后系统会按体重判断容量是否合理。" if sim.mode == "coach" else "单位为 ml。"
     st.markdown(
         "<div class='dose-card'>"
         "<div class='title'>快速补液：请输入本次晶体液容量</div>"
-        "<div class='text'>单位为 ml。确认后系统会按体重判断容量是否合理。</div>"
+        f"<div class='text'>{html.escape(fluid_help)}</div>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -2319,8 +2351,8 @@ def render_fluid_bolus_panel(sim: Simulator) -> bool:
     c_ok, c_cancel = st.columns([1, 1], gap="medium")
     if c_ok.button("确认容量并执行", type="primary", use_container_width=True):
         result = sim.apply_fluid_bolus_volume(float(volume_ml))
-        st.session_state.last_dose_feedback = str(result.get("message", ""))
-        st.session_state.last_dose_feedback_level = str(result.get("status", ""))
+        st.session_state.last_dose_feedback = str(result.get("message", "")) if sim.mode == "coach" else ""
+        st.session_state.last_dose_feedback_level = str(result.get("status", "")) if sim.mode == "coach" else ""
         st.session_state.pending_volume_action_id = ""
         st.session_state.pending_volume_action_label = ""
         sim.tick()
@@ -2343,10 +2375,11 @@ def render_steroid_dose_panel(sim: Simulator) -> bool:
     weight = float(getattr(sim.state, "weight_kg", 0) or 0)
     min_mg = round(1.0 * weight, 1)
     max_mg = round(min(2.0 * weight, 40.0), 1)
+    steroid_help = "单位为 mg。确认后系统会判断使用时机与剂量是否符合标准路径。" if sim.mode == "coach" else "单位为 mg。"
     st.markdown(
         "<div class='dose-card'>"
         "<div class='title'>糖皮质激素：请输入甲泼尼龙剂量</div>"
-        "<div class='text'>单位为 mg。确认后系统会判断使用时机与剂量是否符合标准路径。</div>"
+        f"<div class='text'>{html.escape(steroid_help)}</div>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -2366,8 +2399,8 @@ def render_steroid_dose_panel(sim: Simulator) -> bool:
     c_ok, c_cancel = st.columns([1, 1], gap="medium")
     if c_ok.button("确认剂量并执行", type="primary", use_container_width=True):
         result = sim.apply_steroid_dose(float(dose_mg))
-        st.session_state.last_dose_feedback = str(result.get("message", ""))
-        st.session_state.last_dose_feedback_level = str(result.get("status", ""))
+        st.session_state.last_dose_feedback = str(result.get("message", "")) if sim.mode == "coach" else ""
+        st.session_state.last_dose_feedback_level = str(result.get("status", "")) if sim.mode == "coach" else ""
         st.session_state.pending_steroid_action_id = ""
         st.session_state.pending_steroid_action_label = ""
         sim.tick()
@@ -2505,20 +2538,21 @@ def render_simulation() -> None:
                     unsafe_allow_html=True,
                 )
 
-        with st.expander("完整状态文本", expanded=False):
-            st.code(sim.format_status(), language="text")
+        if sim.mode == "coach":
+            with st.expander("完整状态文本", expanded=False):
+                st.code(sim.format_status(), language="text")
 
     with right:
         with st.container(border=True):
             st.markdown(
                 f"<div class='action-head'>"
                 f"<div class='action-title'>请选择下一步操作</div>"
-                f"<div class='action-note'>每次操作后自动推进 {sim.tick_seconds}s</div>"
+                f"<div class='action-note'>{html.escape('每次操作后自动推进 ' + str(sim.tick_seconds) + 's' if sim.mode == 'coach' else '')}</div>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
 
-            if st.session_state.get("last_dose_feedback"):
+            if sim.mode == "coach" and st.session_state.get("last_dose_feedback"):
                 level = st.session_state.get("last_dose_feedback_level", "")
                 msg = st.session_state.get("last_dose_feedback", "")
                 if level == "valid":
@@ -2584,18 +2618,27 @@ def render_simulation() -> None:
             render_action_history(sim)
 
             st.divider()
-            c1, c2, c3 = st.columns([1.0, 1.05, 2.25], gap="medium")
+            c1, c2, c3 = st.columns([1.0, 1.35, 1.95], gap="medium")
             if c1.button(f"时间流逝 {sim.tick_seconds}s", use_container_width=True):
                 sim.tick()
                 finalize_if_done()
                 st.rerun()
 
-            if sim.mode != "exam":
-                if c2.button("结束并保存", use_container_width=True):
-                    report = enrich_report(sim.build_report(), end_reason="manual_end")
-                    _save_and_end_report(report, "manual_end")
-                    st.rerun()
-            c3.caption("训练模式可手动结束并保存；考试模式需达到系统结束条件。")
+            if c2.button("我已确认完成抢救", type="primary", use_container_width=True):
+                if hasattr(sim, "mark_manual_rescue_completion"):
+                    sim.mark_manual_rescue_completion()
+                report = enrich_report(sim.build_report(), end_reason="participant_confirmed_rescue_complete")
+                if _needs_baseline_post_survey("standard_assessment_completed") and st.session_state.get("assessment_phase") == "基线评估":
+                    st.session_state.baseline_performance_completed = True
+                    st.session_state.pending_prior_experience_survey = True
+                    st.session_state.pending_completion_reason = "participant_confirmed_rescue_complete"
+                    st.session_state.pending_report = report
+                    st.session_state.last_report = report
+                else:
+                    _save_and_end_report(report, "participant_confirmed_rescue_complete")
+                st.rerun()
+            if sim.mode == "coach":
+                c3.caption("可点击确认完成抢救结束当前阶段；未完成标准步骤按0分统计。")
 
 
 def render_report() -> None:
@@ -2610,6 +2653,7 @@ def render_report() -> None:
         "failure": "失败结局",
         "timeout": "超时未完成",
         "manual_end": "手动结束",
+        "participant_confirmed_rescue_complete": "受试者确认完成抢救",
         "critical_resuscitated_transfer_picu": "危重抢救后转入PICU",
     }
     st.success(f"情景结束：{end_reason_labels.get(st.session_state.end_reason, st.session_state.end_reason)}")
@@ -2654,6 +2698,10 @@ def render_report() -> None:
         missing = report.get("critical_missing", [])
         st.write("过程性安全缺陷：" + ("无" if not issues else "、".join(issues)))
         st.write("缺失关键动作：" + ("无" if not missing else "、".join(missing)))
+        flags = report.get("clinical_pathway_flags", {}) or {}
+        unfinished = flags.get("unfinished_required_steps", []) or []
+        if unfinished:
+            st.write("主动确认完成时未完成步骤：" + "、".join(map(str, unfinished)))
 
         st.download_button(
             "下载本次 JSON 报告",

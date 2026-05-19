@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (V1.2.7 module-boundary scoring and baseline-post survey)
+Pediatric Ward Anaphylaxis Simulator (V1.2.9 research-ready scoring and completion controls)
 
 特点（V1.2.7）：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
@@ -174,6 +174,7 @@ class Simulator:
         self.max_score = self._compute_max_score()
         self.penalties = 0
         self.action_first_time: Dict[str, int] = {}
+        self.action_valid_time: Dict[str, int] = {}
 
         self.tick_seconds = int(self.scenario["dynamics"].get("tick_seconds", 30))
         self.min_time_for_success = int(self.scenario.get("training", {}).get("min_time_seconds_for_success", 0))
@@ -538,6 +539,46 @@ class Simulator:
             self.action_first_time[action_id] = self.state.t
         return first_time
 
+    def _mark_valid_completion(self, action_id: str) -> None:
+        canonical = self._standard_score_action_id(action_id)
+        if canonical not in self.action_valid_time:
+            self.action_valid_time[canonical] = int(self.state.t)
+
+    def _unfinished_required_steps(self) -> List[str]:
+        f = self.state.flags
+        checks = [
+            ("stop_infusion", "停用可疑药物并保留通路", bool(f.get("stopped_infusion", False))),
+            ("call_help", "呼救", bool(f.get("help_called", False))),
+            ("abc_assess", "ABC评估", "abc_assess" in self.action_first_time),
+            ("high_flow_oxygen", "开放气道给氧", bool(f.get("oxygen_on", False))),
+            ("shock_position", "体位管理", bool(f.get("positioned", False))),
+            ("connect_monitor", "连接监护", bool(f.get("monitor_on", False))),
+            ("check_bp", "测量血压", bool(f.get("bp_checked", False) or "check_bp" in self.action_first_time)),
+            ("im_epinephrine", "有效肌注肾上腺素", bool(f.get("epi_im_given", False))),
+            ("fluid_bolus", "有效快速补液", bool(f.get("fluid_bolus_valid", False))),
+            ("reassess_first", "第一次有效复评", bool(f.get("first_reassessment_done", False))),
+            ("bronchodilator", "雾化支气管扩张剂", bool(f.get("bronchodilator_neb", False))),
+            ("steroid", "符合时机和剂量要求的糖皮质激素辅助治疗", bool(f.get("steroid_valid", False))),
+            ("reassess_second", "第二次有效复评", bool(f.get("second_reassessment_done", False))),
+            ("family_explain", "第二次复评后家属沟通", bool(f.get("family_valid", f.get("family_communication", False)))),
+            ("sbar_handoff", "家属沟通后SBAR交接", bool(f.get("sbar_valid", f.get("sbar_handoff", False)))),
+        ]
+        return [f"{aid}:{label}" for aid, label, ok in checks if not ok]
+
+    def mark_manual_rescue_completion(self) -> None:
+        f = self.state.flags
+        f["manual_rescue_completion"] = True
+        f["manual_rescue_completion_time_sec"] = int(self.state.t)
+        f["unfinished_required_steps"] = self._unfinished_required_steps()
+        total_required = 15
+        f["completion_rate_at_manual_finish"] = round((total_required - len(f["unfinished_required_steps"])) / total_required * 100, 1)
+        f["score_at_manual_finish"] = int(self.score)
+        self._log("system", "manual_rescue_completion", {
+            "unfinished_required_steps": list(f["unfinished_required_steps"]),
+            "completion_rate_at_manual_finish": f["completion_rate_at_manual_finish"],
+            "score_at_manual_finish": f["score_at_manual_finish"],
+        })
+
     def _standard_score_action_id(self, action_id: str) -> str:
         aliases = {
             "im_epinephrine_dose_verified": "im_epinephrine",
@@ -666,6 +707,8 @@ class Simulator:
             "status": status,
             "reason": reason,
         })
+        if int(gained) > 0:
+            self._mark_valid_completion(canonical)
         if status == "delayed":
             self.state.flags.setdefault("delayed_actions", [])
             self.state.flags["delayed_actions"].append(canonical)
@@ -984,6 +1027,31 @@ class Simulator:
         else:
             f["advanced_support_current_reason"] = ""
 
+    def _award_epinephrine_component_once(self, component_key: str, points: int, eligible: bool = True) -> int:
+        """Award V1.2.9 epinephrine subcomponent points once.
+
+        Components: drug selection 10, route 5, dose 8, timing 2.
+        The module-boundary delay rule is still applied to each component.
+        """
+        if not eligible or int(points) <= 0:
+            return 0
+        score_key = f"im_epinephrine_{component_key}"
+        flag = f"_score_awarded_{score_key}"
+        if self.state.flags.get(flag, False):
+            return 0
+        gained, status, reason = self._apply_delay_rule("im_epinephrine", int(points))
+        self.score += int(gained)
+        if self.score > self.max_score:
+            self.score = self.max_score
+        self.state.flags[flag] = True
+        self._record_score_award(score_key, "im_epinephrine", int(points), int(gained), status, f"肾上腺素分项评分：{component_key}；{reason}")
+        self.state.flags.setdefault("epinephrine_subscores", {})[component_key] = {
+            "max_points": int(points),
+            "awarded_points": int(gained),
+            "status": status,
+        }
+        return int(gained)
+
     def apply_action(self, action_id: str) -> None:
         action = self._find_action(action_id)
         if not action:
@@ -1045,18 +1113,11 @@ class Simulator:
                     "status": "premature",
                     "result": "已记录复评，但第一次有效复评尚未完成，本次不计为有效第二次复评。"
                 })
-            elif self.state.flags.get("family_communication", False):
-                self.state.flags["late_second_reassessment"] = True
-                self._log("action", action_id, {
-                    "label": action.get("label", ""),
-                    "gained": 0,
-                    "status": "late",
-                    "result": "已记录复评，但已发生在告知家属之后，不计为告知前第二次复评。"
-                })
             else:
                 self.state.flags["second_reassessment_done"] = True
                 self.state.flags["reassess_count"] = max(int(self.state.flags.get("reassess_count", 0)), 2)
                 gained = self._award_points_once("reassess_second", int(action.get("score", {}).get("points", 0)), "reassess_second")
+                self._mark_valid_completion("reassess_second")
                 self._log("action", action_id, {
                     "label": action.get("label", ""),
                     "gained": gained,
@@ -1067,9 +1128,13 @@ class Simulator:
 
         if action_id == "family_explain":
             self._first_attempt(action_id)
-            self.apply_effects(action.get("effects", {}))
+            self.state.flags["family_attempted"] = True
             if self.state.flags.get("second_reassessment_done", False):
+                self.apply_effects(action.get("effects", {}))
+                self.state.flags["family_valid"] = True
+                self.state.flags["family_communication"] = True
                 gained = self._award_points_once("family_explain", int(action.get("score", {}).get("points", 0)), "family_explain")
+                self._mark_valid_completion("family_explain")
                 status = "valid"
                 result = "第二次复评后完成家属沟通，计入收尾模块得分。"
             else:
@@ -1088,11 +1153,15 @@ class Simulator:
 
         if action_id == "sbar_handoff":
             self._first_attempt(action_id)
-            self.apply_effects(action.get("effects", {}))
-            valid = self.state.flags.get("family_communication", False) and self.state.flags.get("second_reassessment_done", False)
+            self.state.flags["sbar_attempted"] = True
+            valid = self.state.flags.get("family_valid", False) and self.state.flags.get("second_reassessment_done", False)
             if valid:
+                self.apply_effects(action.get("effects", {}))
+                self.state.flags["sbar_valid"] = True
+                self.state.flags["sbar_handoff"] = True
                 self.state.flags["family_sbar_completed"] = True
                 gained = self._award_points_once("sbar_handoff", int(action.get("score", {}).get("points", 0)), "sbar_handoff")
+                self._mark_valid_completion("sbar_handoff")
                 status = "valid"
                 result = "第二次复评和家属沟通后完成SBAR交接，计入收尾模块得分。"
             else:
@@ -1101,6 +1170,33 @@ class Simulator:
                 result = "已记录SBAR交接；需在第二次复评和家属告知后完成，才计入标准收尾分。"
             self._refresh_process_flags()
             self._log("action", action_id, {"label": action.get("label", ""), "gained": gained, "status": status, "result": result})
+            return
+
+        if action_id == "establish_iv":
+            self._first_attempt(action_id)
+            previously_removed = bool(self.state.flags.get("iv_removed", False) or "remove_iv" in self.action_first_time or not self.state.flags.get("iv_access", True))
+            if previously_removed and not self.state.flags.get("iv_access_reestablished", False):
+                self.apply_effects(action.get("effects", {}))
+                self.state.flags["iv_access_reestablished"] = True
+                self.state.flags["iv_rescue_credit"] = 1
+                # Remove half of the recorded IV-removal penalty from the displayed penalty count.
+                self.penalties = max(0, int(self.penalties) - 1)
+                self._mark_valid_completion("establish_iv")
+                status = "valid_remediation"
+                result = "错误拔除静脉通路后已重新建立，补回相关扣分的一半。"
+            else:
+                status = "recorded_no_standard_score"
+                result = "建立静脉通路已记录；本病例原本保留输液通路，该操作不属于标准加分步骤。"
+            self._refresh_process_flags()
+            self.state.grade = self.compute_grade()
+            self._log("action", action_id, {
+                "label": action.get("label", ""),
+                "gained": 0,
+                "status": status,
+                "iv_access": bool(self.state.flags.get("iv_access", True)),
+                "iv_rescue_credit": int(self.state.flags.get("iv_rescue_credit", 0) or 0),
+                "result": result,
+            })
             return
 
         if action_id == "advanced_support":
@@ -1296,6 +1392,11 @@ class Simulator:
                 "target_dose_mg": target,
             }
 
+        if not is_repeat and dose <= max_single + 1e-9:
+            self._award_epinephrine_component_once("drug_selection", 10, eligible=True)
+            self._award_epinephrine_component_once("route_correct", 5, eligible=True)
+            self._award_epinephrine_component_once("timing", 2, eligible=True)
+
         if dose < target - tolerance:
             self.state.flags["epi_underdose_event"] = True
             self._log("action", "im_epinephrine_underdose" if not is_repeat else "repeat_epinephrine_underdose", {
@@ -1325,7 +1426,12 @@ class Simulator:
         else:
             log_msg = "im_epinephrine_dose_verified" if not dose_high else "im_epinephrine_dose_high"
             self.state.flags["epi_valid_dose_mg"] = round(dose, 3)
-            gained = 0 if dose_high else self._award_points_once("im_epinephrine", int(action.get("score", {}).get("points", 0)), "im_epinephrine")
+            if not dose_high:
+                gained = self._award_epinephrine_component_once("dose_correct", 8, eligible=True)
+                self._mark_valid_completion("im_epinephrine")
+            else:
+                gained = 0
+                self._mark_valid_completion("im_epinephrine")
 
         self._log("action", log_msg, {
             "dose_mg": round(dose, 3),
@@ -1575,15 +1681,16 @@ class Simulator:
         except Exception:
             pass
 
-        # V1.2.6g ordinary assessment stop: once the learner has completed
-        # effective first reassessment, effective second reassessment, family
-        # communication, and SBAR handoff, the ordinary exam ends. Any standard
-        # actions not completed by this point remain 0 and cannot be made up.
+        if self.state.flags.get("manual_rescue_completion", False):
+            return True, "participant_confirmed_rescue_complete"
+
+        # V1.2.9 ordinary assessment stop: early attempts are recorded, but only
+        # valid family communication and valid SBAR satisfy the terminal condition.
         ordinary_completed = bool(
             self.state.flags.get("first_reassessment_done", False)
             and self.state.flags.get("second_reassessment_done", False)
-            and self.state.flags.get("family_communication", False)
-            and self.state.flags.get("sbar_handoff", False)
+            and self.state.flags.get("family_valid", False)
+            and self.state.flags.get("sbar_valid", False)
             and not self.state.flags.get("cardiac_arrest", False)
             and not self.state.flags.get("dead", False)
         )
@@ -1610,8 +1717,11 @@ class Simulator:
         f = self.state.flags
         if not f.get("stopped_infusion", False):
             issues.append("未停用可疑药物/输液")
-        if not f.get("iv_access", True):
-            issues.append("拔除静脉通路，影响后续抢救用药和补液")
+        if f.get("iv_removed", False) or "remove_iv" in self.action_first_time:
+            if f.get("iv_access_reestablished", False):
+                issues.append("曾错误拔除静脉通路，后已重新建立通路（已补救但保留安全缺陷记录）")
+            elif not f.get("iv_access", True):
+                issues.append("拔除静脉通路，影响后续抢救用药和补液")
         if not f.get("help_called", False):
             issues.append("未呼救")
         if "abc_assess" not in self.action_first_time:
@@ -1643,7 +1753,7 @@ class Simulator:
         if not f.get("first_reassessment_done", False):
             issues.append("未完成有效第一次复评")
         if not f.get("bronchodilator_neb", False):
-            issues.append("持续咳嗽/喘息时未进行雾化支扩")
+            issues.append("持续咳嗽/喘息时未进行雾化支气管扩张剂")
         if not f.get("steroid_valid", False):
             issues.append("未完成符合时机和剂量要求的糖皮质激素辅助治疗")
         if f.get("steroid_before_fluid", False):
@@ -1662,10 +1772,10 @@ class Simulator:
             issues.append("未完成告知家属前第二次复评")
         if f.get("family_before_second_reassess", False):
             issues.append("家属告知早于第二次复评")
-        if not f.get("family_communication", False):
-            issues.append("未完成家属告知")
-        if not f.get("sbar_handoff", False):
-            issues.append("未完成SBAR交接")
+        if not f.get("family_valid", False):
+            issues.append("未完成第二次复评后的有效家属告知")
+        if not f.get("sbar_valid", False):
+            issues.append("未完成家属告知后的有效SBAR交接")
         if f.get("repeat_epi_premature", False):
             issues.append("再次肌注肾上腺素时机过早")
         if f.get("repeat_epi_not_indicated", False):
@@ -1734,6 +1844,9 @@ class Simulator:
         def t_of(aid: str) -> Optional[int]:
             return self.action_first_time.get(aid)
 
+        def t_valid(aid: str) -> Optional[int]:
+            return self.action_valid_time.get(aid)
+
         def first_log_time(message: str) -> Optional[int]:
             for e in self.log:
                 if e.kind == "action" and e.message == message:
@@ -1796,7 +1909,20 @@ class Simulator:
                 "critical_resuscitated_transfer_picu": bool(f.get("critical_resuscitated_transfer_picu", False)),
                 "critical_transfer_picu": bool(f.get("critical_transfer_picu", False)),
                 "death_after_arrest_without_cpr": bool(f.get("death_after_arrest_without_cpr", False)),
+                "family_attempted": bool(f.get("family_attempted", False)),
+                "family_valid": bool(f.get("family_valid", False)),
+                "sbar_attempted": bool(f.get("sbar_attempted", False)),
+                "sbar_valid": bool(f.get("sbar_valid", False)),
                 "family_sbar_completed": bool(f.get("family_sbar_completed", False)),
+                "iv_removed": bool(f.get("iv_removed", False)),
+                "iv_access_reestablished": bool(f.get("iv_access_reestablished", False)),
+                "iv_rescue_credit": int(f.get("iv_rescue_credit", 0) or 0),
+                "manual_rescue_completion": bool(f.get("manual_rescue_completion", False)),
+                "manual_rescue_completion_time_sec": f.get("manual_rescue_completion_time_sec", None),
+                "unfinished_required_steps": list(f.get("unfinished_required_steps", []) or []),
+                "completion_rate_at_manual_finish": f.get("completion_rate_at_manual_finish", None),
+                "score_at_manual_finish": f.get("score_at_manual_finish", None),
+                "epinephrine_subscores": dict(f.get("epinephrine_subscores", {}) or {}),
                 "standard_assessment_completed": bool(f.get("standard_assessment_completed", False)),
                 "ordinary_exam_terminal": bool(f.get("ordinary_exam_terminal", False)),
                 "standard_pathway_full_score": bool(f.get("standard_pathway_full_score", False)),
@@ -1854,6 +1980,24 @@ class Simulator:
                 "sbar_handoff": t_of("sbar_handoff"),
                 "im_epinephrine_dose_verified_time": first_log_time("im_epinephrine_dose_verified"),
                 "fluid_bolus_volume_verified_time": first_log_time("fluid_bolus_volume_verified"),
+            },
+            "key_valid_timeline": {
+                "stop_infusion": t_valid("stop_infusion"),
+                "call_help": t_valid("call_help"),
+                "abc_assess": t_valid("abc_assess"),
+                "oxygen": t_valid("high_flow_oxygen"),
+                "position": t_valid("shock_position"),
+                "monitor": t_valid("connect_monitor"),
+                "bp_check": t_valid("check_bp"),
+                "epi_im": t_valid("im_epinephrine"),
+                "fluid": t_valid("fluid_bolus"),
+                "first_reassessment": t_valid("reassess_first"),
+                "bronchodilator": t_valid("bronchodilator"),
+                "steroid": t_valid("steroid"),
+                "second_reassessment": t_valid("reassess_second"),
+                "family_communication": t_valid("family_explain"),
+                "sbar_handoff": t_valid("sbar_handoff"),
+                "establish_iv": t_valid("establish_iv"),
             },
             "observe_recommendation": self.scenario.get("reporting", {}).get("observe_recommendation", {}),
             "log": [dict(t=e.t, kind=e.kind, message=e.message, data=e.data) for e in self.log],
