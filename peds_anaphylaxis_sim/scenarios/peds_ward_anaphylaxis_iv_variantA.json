@@ -4,8 +4,8 @@
     "id": "peds_ward_anaphylaxis_iv_variantA",
     "title": "儿科药物诱发过敏反应动态分支虚拟仿真｜变体版（皮肤表现不典型）",
     "language": "zh-CN",
-    "version": "V1.2.9-research-ready",
-    "source_note": "基于V1.2.8，新增考试记录无提示、主动确认完成抢救、静脉通路补救、正常体温、按年龄公式生成体重、肾上腺素分项评分与收尾有效性修正。",
+    "version": "V1.2.11-research-collection-locked",
+    "source_note": "基于V1.2.10，修正正式分析纳入口径、基线后补充问卷触发条件、现场备注清空及清洁打包。",
     "mode_defaults": {
       "coach": true,
       "tick_seconds": 30
@@ -13,7 +13,7 @@
     "script_role": "variant",
     "script_name": "variantA",
     "display_name": "变体版（皮肤表现不典型）",
-    "scoring_basis": "V1.2.9: missing required steps score 0 when participant confirms rescue completion; IV re-establishment after erroneous IV removal recovers half of the recorded IV-removal penalty.",
+    "scoring_basis": "V1.2.11: missing required steps score 0 when participant confirms rescue completion; IV re-establishment after erroneous IV removal recovers half of the recorded IV-removal penalty; steroid must be valid by timing and dose to count as completed.",
     "scoring_model": "100-point module-boundary scoring with 25-point epinephrine subcomponents and valid-completion timelines."
   },
   "patient": {
@@ -984,5 +984,8 @@
   },
   "scoring_policy": {
     "V1.2.7": "前期模块允许并行但有时间/阶段边界；肌注肾上腺素后进入顺序评分；越过模块边界的补做不再补分或仅给延迟半分。"
+  },
+  "meta": {
+    "version": "V1.2.11-research-collection-locked"
   }
 }

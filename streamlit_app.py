@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.9 research-ready
+儿科护理急救动态分支虚拟仿真训练平台｜V1.2.11 research-collection-locked
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -49,7 +49,7 @@ SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.9 research-ready, clean exam log and manual completion"
+APP_VERSION = "V1.2.11 research-collection-locked, three-stage QC and baseline survey"
 
 DEFAULT_INSTITUTION = "本医疗机构"
 
@@ -71,6 +71,11 @@ DEPARTMENT_CODES = {
 }
 
 ASSESSMENT_PHASE_OPTIONS = ["基线评估", "模拟培训", "培训后考核"]
+COLLECTION_MODE_OPTIONS = ["正式采集", "测试演练"]
+COLLECTION_MODE_CODES = {
+    "正式采集": "formal",
+    "测试演练": "pilot",
+}
 
 WORKFLOW_RULES = {
     "基线评估": {
@@ -213,8 +218,11 @@ def init_session() -> None:
         "department_type": "",
         "nurse_level": "",
         "years_experience": 0.0,
+        "years_experience_confirmed": False,
         "professional_title": "",
         "education_level": "",
+        "collection_mode": "正式采集",
+        "collection_note": "",
         "prior_anaphylaxis_training": "",
         "prior_simulation_experience": "",
         "real_case_experience": "",
@@ -405,6 +413,7 @@ def build_session_metadata(end_reason: str = "") -> Dict[str, Any]:
         "department_type": st.session_state.get("department_type", ""),
         "nurse_level": st.session_state.get("nurse_level", ""),
         "years_experience": st.session_state.get("years_experience", ""),
+        "years_experience_confirmed": bool(st.session_state.get("years_experience_confirmed", False)),
         "professional_title": st.session_state.get("professional_title", ""),
         "education_level": st.session_state.get("education_level", ""),
         "prior_anaphylaxis_training": st.session_state.get("prior_anaphylaxis_training", ""),
@@ -416,6 +425,9 @@ def build_session_metadata(end_reason: str = "") -> Dict[str, Any]:
         "baseline_stage_completed": bool(st.session_state.get("baseline_stage_completed", False)),
         "training_batch": st.session_state.get("training_batch", ""),
         "assessment_phase": st.session_state.get("assessment_phase", ""),
+        "collection_mode": st.session_state.get("collection_mode", "正式采集"),
+        "collection_mode_code": COLLECTION_MODE_CODES.get(st.session_state.get("collection_mode", "正式采集"), "formal"),
+        "collection_note": st.session_state.get("collection_note", ""),
         "workflow_mode": st.session_state.get("workflow_mode", ""),
         "workflow_script_role": st.session_state.get("workflow_script_role", ""),
         "workflow_display": st.session_state.get("workflow_display", ""),
@@ -438,8 +450,12 @@ def research_metadata_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
         "department_type": session.get("department_type", ""),
         "nurse_level": session.get("nurse_level", ""),
         "years_experience": session.get("years_experience", ""),
+        "years_experience_confirmed": session.get("years_experience_confirmed", ""),
         "professional_title": session.get("professional_title", ""),
         "education_level": session.get("education_level", ""),
+        "collection_mode": session.get("collection_mode", ""),
+        "collection_mode_code": session.get("collection_mode_code", ""),
+        "collection_note": session.get("collection_note", ""),
         "prior_anaphylaxis_training": session.get("prior_anaphylaxis_training", ""),
         "prior_simulation_experience": session.get("prior_simulation_experience", ""),
         "real_case_experience": session.get("real_case_experience", ""),
@@ -813,6 +829,7 @@ KEY_ACTION_COLUMNS = [
     ("fluid_time", "fluid"),
     ("first_reassessment_time", "first_reassessment"),
     ("bronchodilator_time", "bronchodilator"),
+    ("steroid_time", "steroid"),
     ("second_reassessment_time", "second_reassessment"),
     ("family_communication_time", "family_communication"),
     ("sbar_time", "sbar_handoff"),
@@ -877,8 +894,12 @@ def full_report_from_database_row(row: Dict[str, Any]) -> Dict[str, Any]:
         session.setdefault("department_type", "")
         session.setdefault("nurse_level", "")
         session.setdefault("years_experience", "")
+        session.setdefault("years_experience_confirmed", "")
         session.setdefault("professional_title", "")
         session.setdefault("education_level", "")
+        session.setdefault("collection_mode", row.get("collection_mode", ""))
+        session.setdefault("collection_mode_code", row.get("collection_mode_code", ""))
+        session.setdefault("collection_note", "")
         session.setdefault("prior_anaphylaxis_training", "")
         session.setdefault("prior_simulation_experience", "")
         session.setdefault("real_case_experience", "")
@@ -910,6 +931,7 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
     session = report.get("session", {}) or {}
     patient = report.get("patient", {}) or {}
     timeline = report.get("key_timeline", {}) or {}
+    valid_timeline = report.get("key_valid_timeline", {}) or {}
     final_vitals = report.get("final_vitals", {}) or {}
     flags = report.get("clinical_pathway_flags", {}) or {}
     issues = _issue_text(report)
@@ -980,7 +1002,10 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
         "final_dbp": final_vitals.get("DBP", ""),
         "process_safety_issues": issues,
         "critical_missing": missing,
+        "process_safety_issue_count": len(report.get("process_safety_issues", []) or []),
+        "critical_missing_count": len(report.get("critical_missing", []) or []),
         "completed_key_steps": "",
+        "valid_completed_key_steps": "",
         "total_action_sequence": "",
         "app_version": session.get("app_version", APP_VERSION),
         "storage_source": storage_source,
@@ -990,6 +1015,26 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
     for column_name, timeline_key in KEY_ACTION_COLUMNS:
         record[column_name] = timeline.get(timeline_key, "")
 
+    valid_timeline_columns = {
+        "valid_stop_infusion_time": "stop_infusion",
+        "valid_call_help_time": "call_help",
+        "valid_abc_assess_time": "abc_assess",
+        "valid_oxygen_time": "oxygen",
+        "valid_position_time": "position",
+        "valid_monitor_time": "monitor",
+        "valid_bp_check_time": "bp_check",
+        "valid_epi_time": "epi_im",
+        "valid_fluid_time": "fluid",
+        "valid_first_reassessment_time": "first_reassessment",
+        "valid_bronchodilator_time": "bronchodilator",
+        "valid_steroid_time": "steroid",
+        "valid_second_reassessment_time": "second_reassessment",
+        "valid_family_communication_time": "family_communication",
+        "valid_sbar_time": "sbar_handoff",
+    }
+    for column_name, timeline_key in valid_timeline_columns.items():
+        record[column_name] = valid_timeline.get(timeline_key, "")
+
     # Extra action-time columns not present in key_timeline.
     record["nebulized_epinephrine_time"] = timeline.get("nebulized_epinephrine", _first_log_time(report, "nebulized_epinephrine"))
     record["reassessment_first_time"] = timeline.get("first_reassessment", _first_log_time(report, "reassess_first"))
@@ -998,9 +1043,17 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
     required_steps = [
         "stop_infusion_time", "call_help_time", "abc_assess_time", "oxygen_time", "position_time",
         "monitor_time", "bp_check_time", "epi_time", "fluid_time", "first_reassessment_time",
-        "bronchodilator_time", "second_reassessment_time", "family_communication_time", "sbar_time"
+        "bronchodilator_time", "steroid_time", "second_reassessment_time", "family_communication_time", "sbar_time"
     ]
     record["completed_key_steps"] = sum(1 for k in required_steps if record.get(k) not in ("", None))
+    valid_required_steps = [
+        "valid_stop_infusion_time", "valid_call_help_time", "valid_abc_assess_time", "valid_oxygen_time",
+        "valid_position_time", "valid_monitor_time", "valid_bp_check_time", "valid_epi_time",
+        "valid_fluid_time", "valid_first_reassessment_time", "valid_bronchodilator_time",
+        "valid_steroid_time", "valid_second_reassessment_time", "valid_family_communication_time",
+        "valid_sbar_time",
+    ]
+    record["valid_completed_key_steps"] = sum(1 for k in valid_required_steps if record.get(k) not in ("", None))
 
     sequence = []
     for entry in _get_logs(report):
@@ -1073,6 +1126,187 @@ def build_action_detail_records_from_reports(reports: List[Dict[str, Any]], stor
     return rows
 
 
+PHASE_EXPORT_MAP = {
+    "基线评估": "baseline",
+    "模拟培训": "training",
+    "培训后考核": "post",
+}
+
+
+def _record_sort_value(record: Dict[str, Any]) -> str:
+    return str(record.get("created_at", "") or record.get("session_id", "") or "")
+
+
+def _as_number_or_blank(value: Any) -> Any:
+    try:
+        if value is None or value == "":
+            return ""
+        return float(value)
+    except Exception:
+        return ""
+
+
+def _phase_recorded(record: Optional[Dict[str, Any]]) -> str:
+    return _yes_no(isinstance(record, dict) and bool(record.get("session_id", "")))
+
+
+def _session_success(record: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(record, dict):
+        return "否"
+    return _yes_no(str(record.get("success", "")) == "是" or str(record.get("end_reason", "")) in ("success", "standard_assessment_completed"))
+
+
+def build_participant_analysis_records(summary_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build one-row-per-participant records for paired pre/post analysis."""
+    groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    phase_counts: Dict[Tuple[str, str], Dict[str, int]] = {}
+    for record in summary_records:
+        if not isinstance(record, dict):
+            continue
+        participant_id = str(record.get("participant_id", "") or "anonymous")
+        collection_mode = str(record.get("collection_mode", "") or "未标记")
+        key = (participant_id, collection_mode)
+        group = groups.setdefault(key, {"participant_id": participant_id, "collection_mode": collection_mode, "stages": {}})
+        counts = phase_counts.setdefault(key, {})
+        phase = str(record.get("assessment_phase", "") or "")
+        if phase in PHASE_EXPORT_MAP:
+            counts[phase] = counts.get(phase, 0) + 1
+            current = group["stages"].get(phase)
+            if current is None or _record_sort_value(record) >= _record_sort_value(current):
+                group["stages"][phase] = record
+
+        for field in [
+            "institution", "campus", "campus_code", "department", "department_code", "participant_initials",
+            "department_type", "nurse_level", "years_experience", "professional_title", "education_level",
+            "prior_anaphylaxis_training", "prior_simulation_experience", "real_case_experience",
+            "collection_mode_code", "collection_note",
+        ]:
+            if not group.get(field) and record.get(field) not in ("", None):
+                group[field] = record.get(field, "")
+
+    rows: List[Dict[str, Any]] = []
+    for key, group in sorted(groups.items(), key=lambda item: item[0]):
+        stages = group.get("stages", {}) or {}
+        counts = phase_counts.get(key, {})
+        row: Dict[str, Any] = {
+            "participant_id": group.get("participant_id", ""),
+            "collection_mode": group.get("collection_mode", ""),
+            "collection_mode_code": group.get("collection_mode_code", ""),
+            "institution": group.get("institution", ""),
+            "campus": group.get("campus", ""),
+            "campus_code": group.get("campus_code", ""),
+            "department": group.get("department", ""),
+            "department_code": group.get("department_code", ""),
+            "participant_initials": group.get("participant_initials", ""),
+            "department_type": group.get("department_type", ""),
+            "nurse_level": group.get("nurse_level", ""),
+            "years_experience": group.get("years_experience", ""),
+            "professional_title": group.get("professional_title", ""),
+            "education_level": group.get("education_level", ""),
+            "prior_anaphylaxis_training": group.get("prior_anaphylaxis_training", ""),
+            "prior_simulation_experience": group.get("prior_simulation_experience", ""),
+            "real_case_experience": group.get("real_case_experience", ""),
+            "collection_note": group.get("collection_note", ""),
+        }
+
+        for phase, prefix in PHASE_EXPORT_MAP.items():
+            record = stages.get(phase)
+            row[f"{prefix}_recorded"] = _phase_recorded(record)
+            row[f"{prefix}_success"] = _session_success(record)
+            row[f"{prefix}_duplicate_count"] = max(0, counts.get(phase, 0) - 1)
+            if isinstance(record, dict):
+                for field in [
+                    "session_id", "created_at", "score", "score_percent", "end_time_seconds", "end_reason",
+                    "final_grade", "epi_dose_status", "epi_delay_seconds", "valid_epi_time",
+                    "fluid_bolus_valid", "steroid_valid", "process_safety_issue_count",
+                    "critical_missing_count", "manual_rescue_completion", "valid_completed_key_steps",
+                ]:
+                    row[f"{prefix}_{field}"] = record.get(field, "")
+            else:
+                for field in [
+                    "session_id", "created_at", "score", "score_percent", "end_time_seconds", "end_reason",
+                    "final_grade", "epi_dose_status", "epi_delay_seconds", "valid_epi_time",
+                    "fluid_bolus_valid", "steroid_valid", "process_safety_issue_count",
+                    "critical_missing_count", "manual_rescue_completion", "valid_completed_key_steps",
+                ]:
+                    row[f"{prefix}_{field}"] = ""
+
+        baseline_score = _as_number_or_blank(row.get("baseline_score"))
+        post_score = _as_number_or_blank(row.get("post_score"))
+        baseline_epi = _as_number_or_blank(row.get("baseline_valid_epi_time") or row.get("baseline_epi_delay_seconds"))
+        post_epi = _as_number_or_blank(row.get("post_valid_epi_time") or row.get("post_epi_delay_seconds"))
+        row["score_change_post_minus_baseline"] = round(post_score - baseline_score, 1) if baseline_score != "" and post_score != "" else ""
+        row["epi_time_change_baseline_minus_post"] = round(baseline_epi - post_epi, 1) if baseline_epi != "" and post_epi != "" else ""
+        row["pre_post_pair_ready"] = _yes_no(row.get("baseline_recorded") == "是" and row.get("post_recorded") == "是")
+        row["all_three_stages_recorded"] = _yes_no(
+            row.get("baseline_recorded") == "是"
+            and row.get("training_recorded") == "是"
+            and row.get("post_recorded") == "是"
+        )
+        row["has_duplicate_stage"] = _yes_no(any(int(row.get(f"{prefix}_duplicate_count", 0) or 0) > 0 for prefix in PHASE_EXPORT_MAP.values()))
+        # 正式主分析必须满足：正式采集 + 基线/模拟培训/培训后考核三阶段均有记录 + 无重复阶段。
+        # 仅有基线和培训后考核配对不足以判定可纳入主分析，因为中间训练阶段缺失会破坏教育干预闭环。
+        row["formal_analysis_ready"] = _yes_no(
+            row.get("collection_mode") == "正式采集"
+            and row.get("all_three_stages_recorded") == "是"
+            and row.get("has_duplicate_stage") != "是"
+        )
+        rows.append(row)
+    return rows
+
+
+def build_data_quality_records(summary_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    participant_rows = build_participant_analysis_records(summary_records)
+    issues: List[Dict[str, Any]] = []
+    for row in participant_rows:
+        participant_id = row.get("participant_id", "")
+        collection_mode = row.get("collection_mode", "")
+        for phase, prefix in PHASE_EXPORT_MAP.items():
+            if row.get(f"{prefix}_recorded") != "是":
+                issues.append({
+                    "participant_id": participant_id,
+                    "collection_mode": collection_mode,
+                    "assessment_phase": phase,
+                    "quality_issue": "缺少该阶段记录",
+                    "suggested_action": "确认受试者是否尚未完成该阶段，或是否误选了采集模式/参与者编号。",
+                })
+            duplicate_count = int(row.get(f"{prefix}_duplicate_count", 0) or 0)
+            if duplicate_count > 0:
+                issues.append({
+                    "participant_id": participant_id,
+                    "collection_mode": collection_mode,
+                    "assessment_phase": phase,
+                    "quality_issue": f"该阶段存在 {duplicate_count} 条重复记录",
+                    "suggested_action": "管理员导出原始记录后确认哪一次为正式纳入记录。",
+                })
+            end_time = _as_number_or_blank(row.get(f"{prefix}_end_time_seconds"))
+            if end_time != "" and end_time < 60:
+                issues.append({
+                    "participant_id": participant_id,
+                    "collection_mode": collection_mode,
+                    "assessment_phase": phase,
+                    "quality_issue": "结束时间短于60秒",
+                    "suggested_action": "核查是否为测试、误触主动完成或现场中断。",
+                })
+            if str(row.get(f"{prefix}_manual_rescue_completion", "")).lower() in ("true", "是", "1"):
+                issues.append({
+                    "participant_id": participant_id,
+                    "collection_mode": collection_mode,
+                    "assessment_phase": phase,
+                    "quality_issue": "使用了主动确认完成",
+                    "suggested_action": "纳入分析前确认该结束方式符合研究方案。",
+                })
+        if row.get("collection_note"):
+            issues.append({
+                "participant_id": participant_id,
+                "collection_mode": collection_mode,
+                "assessment_phase": "",
+                "quality_issue": "存在现场备注/异常记录",
+                "suggested_action": str(row.get("collection_note", "")),
+            })
+    return issues
+
+
 def action_label_map(sim: Simulator) -> Dict[str, str]:
     return {str(a.get("id", "")): str(a.get("label", a.get("id", ""))) for a in sim.actions}
 
@@ -1138,6 +1372,8 @@ def start_simulation(scenario_path: Path, mode: str, seed: int, participant_id: 
     st.session_state.pending_steroid_action_label = ""
     st.session_state.last_dose_feedback = ""
     st.session_state.last_dose_feedback_level = ""
+    # 清空本阶段现场备注，避免备注串到下一阶段或下一位受试者。
+    st.session_state.collection_note = ""
     st.session_state.result_saved = False
     st.session_state.pending_prior_experience_survey = False
     st.session_state.pending_completion_reason = ""
@@ -1186,10 +1422,16 @@ def _save_and_end_report(report: Dict[str, Any], why: str) -> None:
     _return_to_registration_after_save(report, why)
 
 
-def _needs_baseline_post_survey(why: str) -> bool:
+def _needs_baseline_post_survey(why: str = "") -> bool:
+    """Baseline prior-experience survey is required after any baseline ending.
+
+    The baseline performance must be locked first, then the prior training/simulation/real-case
+    exposure items are collected. This applies to success, timeout, failure, death branch,
+    transfer branch, and participant-confirmed completion; otherwise failed baseline records
+    would miss important covariates.
+    """
     return bool(
         st.session_state.get("assessment_phase") == "基线评估"
-        and why in ("success", "standard_assessment_completed")
         and not st.session_state.get("prior_experience_survey_completed", False)
     )
 
@@ -1221,11 +1463,17 @@ def profile_required_missing() -> List[str]:
         "participant_id": "系统生成参与者编号",
         "nurse_level": "护理层级",
         "years_experience": "工作年限",
+        "years_experience_confirmed": "工作年限核对",
         "assessment_phase": "评估阶段",
+        "collection_mode": "采集模式",
     }
     missing = []
     for key, label in required.items():
         value = st.session_state.get(key, "")
+        if key == "years_experience_confirmed":
+            if not bool(value):
+                missing.append(label)
+            continue
         if value is None or str(value).strip() == "":
             missing.append(label)
     return missing
@@ -1319,6 +1567,10 @@ def render_participant_entry_page() -> None:
                 step=0.5,
                 format="%.1f",
             )
+            years_experience_confirmed = n2.checkbox(
+                "已核对工作年限",
+                value=bool(st.session_state.get("years_experience_confirmed", False)),
+            )
             titles = ["", "护士", "护师", "主管护师", "副主任护师", "主任护师", "其他"]
             professional_title = n3.selectbox(
                 "职称",
@@ -1326,7 +1578,7 @@ def render_participant_entry_page() -> None:
                 index=titles.index(st.session_state.professional_title) if st.session_state.professional_title in titles else 0,
             )
 
-            n4, n5 = st.columns([1, 1], gap="large")
+            n4, n5, n6 = st.columns([1, 1, 1], gap="large")
             edu_options = ["", "中专", "大专", "本科", "硕士及以上", "其他"]
             education_level = n4.selectbox(
                 "最高学历",
@@ -1338,6 +1590,25 @@ def render_participant_entry_page() -> None:
                 ASSESSMENT_PHASE_OPTIONS,
                 index=ASSESSMENT_PHASE_OPTIONS.index(st.session_state.assessment_phase)
                 if st.session_state.assessment_phase in ASSESSMENT_PHASE_OPTIONS else 0,
+            )
+            collection_mode = n6.selectbox(
+                "采集模式（必填）",
+                COLLECTION_MODE_OPTIONS,
+                index=COLLECTION_MODE_OPTIONS.index(st.session_state.collection_mode)
+                if st.session_state.collection_mode in COLLECTION_MODE_OPTIONS else 0,
+            )
+
+            workflow_preview = workflow_for_phase(assessment_phase)
+            st.markdown(
+                f"<div class='form-note'>阶段确认：{html.escape(workflow_preview.get('display', ''))}。"
+                f"采集模式：{html.escape(collection_mode)}。正式收数据时请勿选择测试演练。</div>",
+                unsafe_allow_html=True,
+            )
+            collection_note = st.text_area(
+                "现场备注/异常记录（选填）",
+                value=st.session_state.get("collection_note", ""),
+                placeholder="如老师干预、中途断网、误点后重做等；无异常可留空。",
+                height=80,
             )
 
             st.markdown(
@@ -1361,6 +1632,7 @@ def render_participant_entry_page() -> None:
                 st.session_state.prior_experience_survey_time = ""
                 st.session_state.baseline_performance_completed = False
                 st.session_state.baseline_stage_completed = False
+                st.session_state.years_experience_confirmed = False
 
             st.session_state.participant_initials = initials_clean
             st.session_state.participant_id = generated_id
@@ -1372,8 +1644,11 @@ def render_participant_entry_page() -> None:
             st.session_state.department_type = department.strip()
             st.session_state.nurse_level = nurse_level.strip()
             st.session_state.years_experience = years_experience
+            st.session_state.years_experience_confirmed = bool(years_experience_confirmed)
             st.session_state.professional_title = professional_title.strip()
             st.session_state.education_level = education_level.strip()
+            st.session_state.collection_mode = collection_mode.strip()
+            st.session_state.collection_note = collection_note.strip()
             # 既往过敏反应培训/仿真培训/真实处理经历不在登记页采集，
             # 仅在基线评估操作完成后以补充问卷形式采集一次，避免提示效应。
             st.session_state.training_batch = ""
@@ -1395,7 +1670,7 @@ def render_participant_entry_page() -> None:
                 st.rerun()
 
 def render_sidebar() -> None:
-    st.sidebar.title("V1.2.9 控制台")
+    st.sidebar.title("V1.2.11 控制台")
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1415,7 +1690,8 @@ def render_sidebar() -> None:
         f"编号：{st.session_state.participant_id}  \n"
         f"单位：{st.session_state.institution}｜{st.session_state.campus}  \n"
         f"科室：{st.session_state.department}  \n"
-        f"层级：{st.session_state.nurse_level}｜年限：{st.session_state.years_experience}年"
+        f"层级：{st.session_state.nurse_level}｜年限：{st.session_state.years_experience}年  \n"
+        f"采集模式：{st.session_state.get('collection_mode', '')}"
     )
     if st.sidebar.button("重新填写受试者信息", use_container_width=True):
         st.session_state.profile_completed = False
@@ -2059,6 +2335,7 @@ def render_intro() -> None:
             {"项目": "护理层级", "内容": st.session_state.get("nurse_level", "")},
             {"项目": "工作年限", "内容": f"{st.session_state.get('years_experience', '')} 年"},
             {"项目": "评估阶段", "内容": st.session_state.get("assessment_phase", "")},
+            {"项目": "采集模式", "内容": st.session_state.get("collection_mode", "")},
         ]
         st.dataframe(info_rows, use_container_width=True, hide_index=True)
 
@@ -2138,7 +2415,7 @@ def render_action_history(sim: Simulator) -> None:
 
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.2.9 研究采集逻辑修正版")
+    st.markdown("### 管理员后台｜V1.2.11 研究采集修订版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
         st.caption("请输入管理员密码后查看和导出训练记录。")
@@ -2185,52 +2462,93 @@ def render_admin_page() -> None:
     if local_summary_records and raw_db_rows:
         st.caption(f"本地备用摘要记录：{len(local_summary_records)} 条；当前后台优先显示云端数据库记录。")
 
+    filter_col1, filter_col2 = st.columns([1, 1], gap="large")
+    collection_filter = filter_col1.selectbox("采集模式筛选", ["全部"] + COLLECTION_MODE_OPTIONS, index=0)
+    phase_filter = filter_col2.selectbox("阶段筛选", ["全部"] + ASSESSMENT_PHASE_OPTIONS, index=0)
+
+    def keep_collection(record: Dict[str, Any]) -> bool:
+        return collection_filter == "全部" or str(record.get("collection_mode", "")) == collection_filter
+
+    def keep_phase(record: Dict[str, Any]) -> bool:
+        return phase_filter == "全部" or str(record.get("assessment_phase", "")) == phase_filter
+
+    collection_summary_records = [r for r in summary_records if keep_collection(r)]
+    participant_analysis_records = build_participant_analysis_records(collection_summary_records)
+    quality_records = build_data_quality_records(collection_summary_records)
+    summary_records = [r for r in collection_summary_records if keep_phase(r)]
+    action_detail_records = [r for r in action_detail_records if keep_collection(r) and keep_phase(r)]
+
+    def keep_raw_record(record: Dict[str, Any]) -> bool:
+        if "session" in record and isinstance(record.get("session"), dict):
+            session = record.get("session", {}) or {}
+            wrapped = {
+                "collection_mode": session.get("collection_mode", ""),
+                "assessment_phase": session.get("assessment_phase", ""),
+            }
+            return keep_collection(wrapped) and keep_phase(wrapped)
+        return keep_collection(record) and keep_phase(record)
+
+    raw_jsonl_records = [r for r in raw_jsonl_records if isinstance(r, dict) and keep_raw_record(r)]
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("训练记录数", len(summary_records))
     if summary_records:
         scores = []
-        success_count = 0
         epi_invalid_count = 0
         for r in summary_records:
             try:
                 scores.append(float(r.get("score", 0)))
             except Exception:
                 pass
-            if str(r.get("end_reason", "")) in ("success", "standard_assessment_completed") or str(r.get("success", "")) == "是":
-                success_count += 1
             if str(r.get("epi_dose_status", "")) in ["underdose", "overdose"]:
                 epi_invalid_count += 1
         c2.metric("平均得分", f"{sum(scores)/len(scores):.1f}" if scores else "-")
-        c3.metric("Success次数", success_count)
+        c3.metric("前后测配对人数", sum(1 for r in participant_analysis_records if r.get("pre_post_pair_ready") == "是"))
         c4.metric("肾上腺素剂量错误", epi_invalid_count)
     else:
         c2.metric("平均得分", "-")
-        c3.metric("Success次数", "-")
+        c3.metric("前后测配对人数", "-")
         c4.metric("肾上腺素剂量错误", "-")
 
     st.markdown("#### 数据导出")
-    st.caption("汇总CSV适合Excel/SPSS/R做统计；操作明细CSV适合分析每一步操作路径；完整JSONL用于保留原始过程数据。")
+    st.caption("一人一行CSV适合论文前后测统计；汇总CSV适合每次训练分析；质控CSV用于发现缺阶段、重复阶段、异常时长和主动结束记录。")
 
-    d1, d2, d3 = st.columns(3)
+    d1, d2, d3, d4, d5 = st.columns(5)
     now = datetime.now().strftime("%Y%m%d_%H%M%S")
     d1.download_button(
-        "导出汇总 CSV（每次训练一行）",
+        "一人一行 CSV",
+        data=records_to_csv_bytes(participant_analysis_records),
+        file_name=f"peds_sim_participant_paired_{storage_label}_{now}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        disabled=not participant_analysis_records,
+    )
+    d2.download_button(
+        "汇总 CSV",
         data=records_to_csv_bytes(summary_records),
         file_name=f"peds_sim_summary_{storage_label}_{now}.csv",
         mime="text/csv",
         use_container_width=True,
         disabled=not summary_records,
     )
-    d2.download_button(
-        "导出操作明细 CSV（每个操作一行）",
+    d3.download_button(
+        "质控提示 CSV",
+        data=records_to_csv_bytes(quality_records),
+        file_name=f"peds_sim_quality_checks_{storage_label}_{now}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        disabled=not quality_records,
+    )
+    d4.download_button(
+        "操作明细 CSV",
         data=records_to_csv_bytes(action_detail_records),
         file_name=f"peds_sim_action_details_{storage_label}_{now}.csv",
         mime="text/csv",
         use_container_width=True,
         disabled=not action_detail_records,
     )
-    d3.download_button(
-        "导出完整 JSONL（每次训练一行）",
+    d5.download_button(
+        "完整 JSONL",
         data=records_to_jsonl_bytes(raw_jsonl_records),
         file_name=f"peds_sim_full_reports_{storage_label}_{now}.jsonl",
         mime="application/json",
@@ -2241,18 +2559,31 @@ def render_admin_page() -> None:
     st.divider()
     view = st.radio(
         "查看数据表",
-        ["训练汇总", "操作明细"],
-        index=0 if st.session_state.get("admin_export_view", "训练汇总") == "训练汇总" else 1,
+        ["一人一行", "训练汇总", "质控提示", "操作明细"],
+        index=["一人一行", "训练汇总", "质控提示", "操作明细"].index(st.session_state.get("admin_export_view", "一人一行"))
+        if st.session_state.get("admin_export_view", "一人一行") in ["一人一行", "训练汇总", "质控提示", "操作明细"] else 0,
         horizontal=True,
     )
     st.session_state.admin_export_view = view
 
-    if view == "训练汇总":
+    if view == "一人一行":
+        if participant_analysis_records:
+            st.markdown("**一人一行配对分析表预览（最近200名受试者）**")
+            st.dataframe(list(reversed(participant_analysis_records[-200:])), use_container_width=True, hide_index=True)
+        else:
+            st.warning("尚未产生可配对的受试者记录。")
+    elif view == "训练汇总":
         if summary_records:
             st.markdown("**训练汇总预览（最近200条）**")
             st.dataframe(list(reversed(summary_records[-200:])), use_container_width=True, hide_index=True)
         else:
             st.warning("尚未产生训练汇总记录。")
+    elif view == "质控提示":
+        if quality_records:
+            st.markdown("**质控提示预览**")
+            st.dataframe(quality_records, use_container_width=True, hide_index=True)
+        else:
+            st.success("当前筛选范围内未发现明显质控提示。")
     else:
         if action_detail_records:
             st.markdown("**操作明细预览（最近500条操作事件）**")
@@ -2263,7 +2594,9 @@ def render_admin_page() -> None:
     with st.expander("字段说明", expanded=False):
         st.markdown(
             """
-            - **汇总 CSV**：每次训练一行，已将关键步骤时间点、肾上腺素剂量状态、错误操作次数、最终生命体征等展开为单独字段。
+            - **一人一行 CSV**：按参与者编号和采集模式自动配对基线、训练、后测，直接包含前后测分差和肾上腺素时间变化。
+            - **汇总 CSV**：每次训练一行，已将关键步骤时间点、有效完成时间、肾上腺素剂量状态、错误操作次数、最终生命体征等展开为单独字段。
+            - **质控提示 CSV**：列出缺少阶段、重复阶段、异常短时长、主动确认完成和现场备注，便于正式纳入前清洗数据。
             - **操作明细 CSV**：每个操作事件一行，包含操作时间、操作名称、加分、扣分、剂量、结果等，适合分析操作顺序和延迟。
             - **完整 JSONL**：一行是一份完整训练报告，保留嵌套结构，适合长期归档和后续深度分析。
             """
@@ -2628,13 +2961,15 @@ def render_simulation() -> None:
                 if hasattr(sim, "mark_manual_rescue_completion"):
                     sim.mark_manual_rescue_completion()
                 report = enrich_report(sim.build_report(), end_reason="participant_confirmed_rescue_complete")
-                if _needs_baseline_post_survey("standard_assessment_completed") and st.session_state.get("assessment_phase") == "基线评估":
+                if _needs_baseline_post_survey("participant_confirmed_rescue_complete"):
                     st.session_state.baseline_performance_completed = True
                     st.session_state.pending_prior_experience_survey = True
                     st.session_state.pending_completion_reason = "participant_confirmed_rescue_complete"
                     st.session_state.pending_report = report
                     st.session_state.last_report = report
                 else:
+                    if st.session_state.get("assessment_phase") == "基线评估":
+                        st.session_state.baseline_stage_completed = True
                     _save_and_end_report(report, "participant_confirmed_rescue_complete")
                 st.rerun()
             if sim.mode == "coach":

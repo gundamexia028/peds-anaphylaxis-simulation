@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (V1.2.9 research-ready scoring and completion controls)
+Pediatric Ward Anaphylaxis Simulator (V1.2.11 research-collection-locked scoring and completion controls)
 
-特点（V1.2.7）：
+特点：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
 - 操作菜单：仅显示“操作名称”，不提供引导性措辞
 - 自动评分：前期模块化并行评分；首次肌注肾上腺素为核心分界点；肾上腺素后按模块边界顺序评分；延迟给半分，越过模块边界不再补分
@@ -47,9 +47,6 @@ def load_scenario(path: str) -> Dict[str, Any]:
         )
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-def safe_eval(expr: str, ctx: Dict[str, Any]) -> bool:
-    return bool(eval(expr, {"__builtins__": {}}, ctx))
 
 @dataclass
 class SimState:
@@ -1028,7 +1025,7 @@ class Simulator:
             f["advanced_support_current_reason"] = ""
 
     def _award_epinephrine_component_once(self, component_key: str, points: int, eligible: bool = True) -> int:
-        """Award V1.2.9 epinephrine subcomponent points once.
+        """Award V1.2.11 epinephrine subcomponent points once.
 
         Components: drug selection 10, route 5, dose 8, timing 2.
         The module-boundary delay rule is still applied to each component.
@@ -1313,8 +1310,10 @@ class Simulator:
         V1.2.5 rules:
         - 1:1000 IM epinephrine, 0.01 mg/kg, single pediatric maximum 0.3 mg.
         - Correct range: target dose ±0.01 mg.
-        - Below target range: ineffective underdose, no first-line effect or score.
-        - Above target range but <=0.3 mg: inaccurate high dose; effect is recorded, score is not awarded.
+        - Below target range: ineffective underdose; drug/route/timing subscores
+          may be retained, but dose subscore and first-line clinical effect are not awarded.
+        - Above target range but <=0.3 mg: inaccurate high dose; effect is recorded,
+          but dose subscore is not awarded.
         - >0.3 mg: serious medication safety event.
         """
         try:
@@ -1684,7 +1683,7 @@ class Simulator:
         if self.state.flags.get("manual_rescue_completion", False):
             return True, "participant_confirmed_rescue_complete"
 
-        # V1.2.9 ordinary assessment stop: early attempts are recorded, but only
+        # V1.2.11 ordinary assessment stop: early attempts are recorded, but only
         # valid family communication and valid SBAR satisfy the terminal condition.
         ordinary_completed = bool(
             self.state.flags.get("first_reassessment_done", False)
@@ -1837,6 +1836,9 @@ class Simulator:
                     missing.append(aid)
             elif aid == "im_epinephrine":
                 if not self.state.flags.get("epi_im_given", False):
+                    missing.append(aid)
+            elif aid == "steroid":
+                if not self.state.flags.get("steroid_valid", False):
                     missing.append(aid)
             elif aid and aid not in self.action_first_time:
                 missing.append(aid)
