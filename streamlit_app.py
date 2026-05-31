@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-护理动态分支虚拟仿真训练平台｜V1.3.5 academy branching enhanced
+护理动态分支虚拟仿真训练平台｜V1.3.6 academy post-test completion gate fixed
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -20,6 +20,7 @@
 - V1.2.5新增：输液场景双复评逻辑、儿童肾上腺素0.3 mg上限、快速补液容量输入、再次肌注/高级支持/CPR/雾化肾上腺素条件性路径。
 - V1.2.6新增：总分升至25分；删除抗组胺药按钮；糖皮质激素纳入5分并需输入剂量；未及时肌注肾上腺素改为第8关键节点后加速恶化；新增气道梗阻/球囊加压给氧条件性分支。
 - V1.3.5新增：在V1.3.4推广版权限与学院流程基础上，增强学院病例脚本、护生身份边界、教学性错误分支、风险标签和100分分项评分；临床模式不改动。
+- V1.3.6修复：学院课后考核完成门控。未完成完整课后考核流程时，不得跳转SUS/教学体验；学院情景早期低血压/低氧恶化不再直接终止阶段。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -55,7 +56,7 @@ RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
 CONFIG_DIR = ROOT / "config"
 ORG_ACCESS_CODES_PATH = CONFIG_DIR / "org_access_codes.json"
-APP_VERSION = "V1.3.5 academy case branching enhanced from V1.3.4"
+APP_VERSION = "V1.3.6 academy post-test completion gate fixed from V1.3.5"
 
 DEFAULT_INSTITUTION = "四川大学华西第二医院"
 
@@ -1874,8 +1875,41 @@ def _return_to_registration_after_save(report: Dict[str, Any], why: str) -> None
     st.session_state.result_saved = False
 
 
-def _needs_academy_post_evaluation() -> bool:
-    return bool(current_system_mode() == "academy" and st.session_state.get("assessment_phase") == "课后考核" and not st.session_state.get("academy_post_evaluation_completed", False))
+ACADEMY_POST_TEST_REQUIRED_TIMELINE_KEYS = [
+    "allergy_identification",
+    "stop_infusion",
+    "call_help",
+    "prepare_rescue_equipment",
+    "academy_reassess",
+    "academy_family_communication",
+    "academy_sbar_handoff",
+]
+
+
+def _academy_post_test_fully_completed(report: Optional[Dict[str, Any]], why: str) -> bool:
+    """Only unlock SUS/teaching-experience after the academy post-test is truly complete.
+
+    V1.3.5 issue: academy post-test terminal failure could be triggered by early deterioration,
+    then _save_and_end_report opened SUS immediately. V1.3.6 gates the post-test evaluation
+    behind a real completed pathway, so a learner cannot jump to SUS after only recognition,
+    circulation assessment, or another early action.
+    """
+    if current_system_mode() != "academy":
+        return False
+    if st.session_state.get("assessment_phase") != "课后考核":
+        return False
+    if st.session_state.get("academy_post_evaluation_completed", False):
+        return False
+    if why != "success":
+        return False
+    if not isinstance(report, dict):
+        return False
+    timeline = report.get("key_timeline", {}) or {}
+    return all(timeline.get(key) is not None for key in ACADEMY_POST_TEST_REQUIRED_TIMELINE_KEYS)
+
+
+def _needs_academy_post_evaluation(report: Optional[Dict[str, Any]] = None, why: str = "") -> bool:
+    return _academy_post_test_fully_completed(report, why)
 
 
 def _sus_level(score: float) -> str:
@@ -1957,7 +1991,7 @@ def render_academy_post_evaluation_survey() -> None:
 
 
 def _save_and_end_report(report: Dict[str, Any], why: str) -> None:
-    if _needs_academy_post_evaluation():
+    if _needs_academy_post_evaluation(report, why):
         st.session_state.pending_academy_post_evaluation = True
         st.session_state.pending_post_evaluation_report = report
         st.session_state.pending_post_evaluation_reason = why
@@ -4022,23 +4056,28 @@ def render_simulation() -> None:
                 finalize_if_done()
                 st.rerun()
 
-            if c2.button("我已确认完成抢救", type="primary", use_container_width=True):
-                if hasattr(sim, "mark_manual_rescue_completion"):
-                    sim.mark_manual_rescue_completion()
-                report = enrich_report(sim.build_report(), end_reason="participant_confirmed_rescue_complete")
-                if _needs_baseline_post_survey("participant_confirmed_rescue_complete"):
-                    st.session_state.baseline_performance_completed = True
-                    st.session_state.pending_prior_experience_survey = True
-                    st.session_state.pending_completion_reason = "participant_confirmed_rescue_complete"
-                    st.session_state.pending_report = report
-                    st.session_state.last_report = report
-                else:
-                    if st.session_state.get("assessment_phase") == "基线评估":
-                        st.session_state.baseline_stage_completed = True
-                    _save_and_end_report(report, "participant_confirmed_rescue_complete")
-                st.rerun()
-            if sim.mode == "coach":
-                c3.caption("可点击确认完成抢救结束当前阶段；未完成标准步骤按0分统计。")
+            academy_exam_locked = current_system_mode() == "academy" and sim.mode == "exam"
+            if academy_exam_locked:
+                c2.button("考试模式需按流程完成", type="primary", use_container_width=True, disabled=True)
+                c3.caption("学院课前/课后考试模式已锁定：需完成情景核心节点后系统自动结束，避免提前结束或提前进入SUS。")
+            else:
+                if c2.button("我已确认完成抢救", type="primary", use_container_width=True):
+                    if hasattr(sim, "mark_manual_rescue_completion"):
+                        sim.mark_manual_rescue_completion()
+                    report = enrich_report(sim.build_report(), end_reason="participant_confirmed_rescue_complete")
+                    if _needs_baseline_post_survey("participant_confirmed_rescue_complete"):
+                        st.session_state.baseline_performance_completed = True
+                        st.session_state.pending_prior_experience_survey = True
+                        st.session_state.pending_completion_reason = "participant_confirmed_rescue_complete"
+                        st.session_state.pending_report = report
+                        st.session_state.last_report = report
+                    else:
+                        if st.session_state.get("assessment_phase") == "基线评估":
+                            st.session_state.baseline_stage_completed = True
+                        _save_and_end_report(report, "participant_confirmed_rescue_complete")
+                    st.rerun()
+                if sim.mode == "coach":
+                    c3.caption("可点击确认完成抢救结束当前阶段；未完成标准步骤按0分统计。")
 
 
 def render_report() -> None:

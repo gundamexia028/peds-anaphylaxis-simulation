@@ -4,8 +4,8 @@
     "id": "peds_ward_allergy_academy_variant",
     "title": "儿科严重过敏反应/过敏性休克抢救虚拟仿真｜学院变体版",
     "language": "zh-CN",
-    "version": "V1.3.5-academy-branching-enhanced",
-    "source_note": "V1.3.5在V1.3.4推广版权限与学院流程基础上叠加增强：学院病例脚本、护生身份边界、教学性错误分支、风险标签与100分分项评分；临床模式不改动。",
+    "version": "V1.3.6-academy-post-test-completion-gate-fixed",
+    "source_note": "V1.3.6在V1.3.5基础上修复学院课后考核完成门控：未完成完整流程不进入SUS/教学体验；早期低血压或低氧恶化不再直接终止学院考核。",
     "mode_defaults": {
       "coach": true,
       "tick_seconds": 30
@@ -21,7 +21,7 @@
     "academy_scenario_category": "急救护理",
     "academy_course_type": "基础护理/急救护理/儿科护理",
     "academy_difficulty": "基础版",
-    "version_line": "main_system_version_V1.3.5_continuing_from_V1.3.4",
+    "version_line": "main_system_version_V1.3.6_continuing_from_V1.3.5",
     "case_design_principle": "same_medical_core_as_clinical_mode_but_reduced_role_tasks_for_nursing_students_neutral_exam_labels_teaching_error_branches_role_boundary_scoring"
   },
   "patient": {
@@ -579,9 +579,10 @@
     ]
   },
   "end_conditions": {
-    "success_when": "flags.academy_completed and flags.academy_reassessment_done",
-    "failure_when": "flags.dead or vitals.SpO2 <= 80 or vitals.SBP < age_sbp_threshold",
-    "max_time_seconds": 900
+    "success_when": "flags.allergy_identified and flags.stopped_infusion and flags.help_called and flags.oxygen_on and flags.monitor_on and flags.bp_checked and flags.rescue_equipment_prepared and flags.academy_reassessment_done and flags.academy_family_communication and flags.academy_sbar_done",
+    "failure_when": "flags.dead or flags.cardiac_arrest or vitals.SpO2 <= 70 or vitals.SBP <= 45",
+    "max_time_seconds": 900,
+    "completion_gate_note": "V1.3.6: academy post-test may only proceed to SUS after all core academy actions are completed; early severe-but-not-arrest deterioration is recorded as risk, not automatic stage completion."
   },
   "reporting": {
     "observe_recommendation": {
@@ -652,7 +653,8 @@
   },
   "change_log": {
     "V1.2.7": "模块边界评分版：普通路径总分100分；抢救启动和初始支持按模块评分；首次有效肌注肾上腺素为核心分界点；肾上腺素后按标准处理模块评分；再次肌注仅异常分支触发；基线后补充问卷由前端采集。",
-    "V1.3.5": "基于V1.3.4主线叠加学院病例脚本与分支逻辑增强：固定初始/变体病例，100分分项评分调整为15/20/25/15/10/15，新增护生身份边界、二线药物优先级错误、呼救方式不当、旁观等待等教学性错误分支和风险标签。"
+    "V1.3.5": "基于V1.3.4主线叠加学院病例脚本与分支逻辑增强：固定初始/变体病例，100分分项评分调整为15/20/25/15/10/15，新增护生身份边界、二线药物优先级错误、呼救方式不当、旁观等待等教学性错误分支和风险标签。",
+    "V1.3.6": "修复学院课后考核提前终止并跳转SUS问题：收紧成功终止条件为完整护生能力路径，放宽早期失败终止阈值；SUS/教学体验仅在课后考核完整完成后开放。"
   },
   "scoring_policy": {
     "V1.2.7": "前期模块允许并行但有时间/阶段边界；肌注肾上腺素后进入顺序评分；越过模块边界的补做不再补分或仅给延迟半分。"
