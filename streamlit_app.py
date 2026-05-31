@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-儿科护理急救动态分支虚拟仿真训练平台｜V1.2.11 research-collection-locked
+护理动态分支虚拟仿真训练平台｜V1.3.5 academy branching enhanced
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -19,6 +19,7 @@
 - V1.1.4新增：按评估阶段自动锁定流程；基线评估=考试模式+初始病例，模拟培训=训练模式+初始病例，培训后考核=考试模式+变体病例Variant A；受试者不再自行选择运行模式和病例脚本。
 - V1.2.5新增：输液场景双复评逻辑、儿童肾上腺素0.3 mg上限、快速补液容量输入、再次肌注/高级支持/CPR/雾化肾上腺素条件性路径。
 - V1.2.6新增：总分升至25分；删除抗组胺药按钮；糖皮质激素纳入5分并需输入剂量；未及时肌注肾上腺素改为第8关键节点后加速恶化；新增气道梗阻/球囊加压给氧条件性分支。
+- V1.3.5新增：在V1.3.4推广版权限与学院流程基础上，增强学院病例脚本、护生身份边界、教学性错误分支、风险标签和100分分项评分；临床模式不改动。
 
 声明：
     本系统仅用于护理教学、培训与科研可行性验证，不用于临床诊疗决策。
@@ -27,11 +28,14 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import html
 import io
 import json
 import os
 import random
+import secrets as token_secrets
+import string
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -42,16 +46,18 @@ import streamlit as st
 from peds_anaphylaxis_sim.engine import Simulator, load_scenario, save_report
 
 
-APP_TITLE = "儿科护理虚拟仿真训练与评估平台"
-APP_SUBTITLE = "Dynamic Branching Virtual Simulation Platform for Pediatric Nursing Emergency Training"
+APP_TITLE = "护理动态分支虚拟仿真训练与评估平台"
+APP_SUBTITLE = "Dynamic Branching Virtual Simulation Platform for Nursing Training and Education"
 ROOT = Path(__file__).resolve().parent
 SCENARIO_DIR = ROOT / "peds_anaphylaxis_sim" / "scenarios"
 RUNS_DIR = Path(os.environ.get("PEDSIM_RESULTS_DIR", str(ROOT / "runs_web")))
 RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
-APP_VERSION = "V1.2.11 research-collection-locked, three-stage QC and baseline survey"
+CONFIG_DIR = ROOT / "config"
+ORG_ACCESS_CODES_PATH = CONFIG_DIR / "org_access_codes.json"
+APP_VERSION = "V1.3.5 academy case branching enhanced from V1.3.4"
 
-DEFAULT_INSTITUTION = "本医疗机构"
+DEFAULT_INSTITUTION = "四川大学华西第二医院"
 
 CAMPUS_CODES = {
     "锦江院区": "JJYQ",
@@ -70,40 +76,218 @@ DEPARTMENT_CODES = {
     "消化科": "XHK",
 }
 
-ASSESSMENT_PHASE_OPTIONS = ["基线评估", "模拟培训", "培训后考核"]
+SYSTEM_MODE_OPTIONS = {
+    "clinical": {
+        "label": "临床模式",
+        "subtitle": "面向临床护士/低年资护士，保留原严重过敏反应动态分支处置流程。",
+        "participant_type": "clinical_nurse",
+    },
+    "academy": {
+        "label": "学院模式",
+        "subtitle": "面向在校护生，进入通用情景库后选择教学情景；当前仅开放严重过敏反应/过敏性休克抢救。",
+        "participant_type": "nursing_student",
+    },
+}
+
+CLINICAL_ASSESSMENT_PHASE_OPTIONS = ["基线评估", "模拟培训", "培训后考核"]
+ACADEMY_ASSESSMENT_PHASE_OPTIONS = ["课前测评", "模拟训练", "课后考核"]
+ALL_ASSESSMENT_PHASE_OPTIONS = CLINICAL_ASSESSMENT_PHASE_OPTIONS + ACADEMY_ASSESSMENT_PHASE_OPTIONS
+# Backward-compatible alias used by older clinical UI/export code.
+ASSESSMENT_PHASE_OPTIONS = CLINICAL_ASSESSMENT_PHASE_OPTIONS
+
 COLLECTION_MODE_OPTIONS = ["正式采集", "测试演练"]
 COLLECTION_MODE_CODES = {
     "正式采集": "formal",
     "测试演练": "pilot",
 }
 
+ACADEMY_GRADE_OPTIONS = ["", "一年级", "二年级", "三年级", "四年级", "实习结束/毕业前"]
+
+SUS_ITEMS = [
+    "我愿意经常使用这个系统进行学习或训练。",
+    "我觉得这个系统过于复杂。",
+    "我认为这个系统容易使用。",
+    "我认为需要技术人员帮助才能使用这个系统。",
+    "我觉得系统中的各项功能整合良好。",
+    "我觉得这个系统前后不一致。",
+    "我认为大多数护生可以很快学会使用这个系统。",
+    "我觉得这个系统使用起来很繁琐。",
+    "我在使用这个系统时感到有信心。",
+    "我需要先学习很多额外知识才能使用这个系统。",
+]
+
+TEACHING_EXPERIENCE_ITEMS = [
+    "该系统提高了我学习急救护理知识的兴趣。",
+    "情景设置让我感到接近真实临床场景。",
+    "该系统有助于我理解严重过敏反应/过敏性休克的表现。",
+    "该系统有助于我掌握停止可疑输入、呼救、给氧、监测等初步处置流程。",
+    "该系统有助于我理解护生在抢救中的配合角色。",
+    "该系统有助于我学习如何向老师或医生汇报。",
+    "该系统提高了我面对类似情景时的信心。",
+    "我愿意推荐该系统用于护理实训教学。",
+]
+
+ACADEMY_EXAM_ACTION_LABELS = {
+    "allergy_identification": "判断当前异常情况",
+    "stop_infusion": "暂停当前输入并处理通路",
+    "call_help": "呼叫老师/上级人员",
+    "high_flow_oxygen": "给予氧气支持",
+    "connect_monitor": "连接监测设备",
+    "check_bp": "测量血压和循环状态",
+    "prepare_rescue_equipment": "准备急救物品及相关药物",
+    "academy_reassess": "复测生命体征并复评",
+    "academy_family_communication": "简要告知并安抚家属",
+    "academy_sbar_handoff": "选择需要汇报的内容",
+    "continue_infusion": "继续观察，暂不改变输入",
+    "remove_iv": "直接拔除静脉通路",
+    "ask_family_first": "先进一步询问相关病史",
+    "send_family_for_help": "让家属去寻找帮助",
+    "prepare_steroid_antihistamine_only": "先准备辅助用药",
+    "student_independent_epinephrine": "自行完成急救注射操作",
+    "watch_only": "旁观等待老师处理",
+}
+
+ACADEMY_SCENARIO_LIBRARY = {
+    "academy_anaphylaxis_rescue": {
+        "id": "academy_anaphylaxis_rescue",
+        "name": "严重过敏反应/过敏性休克抢救",
+        "category": "急救护理",
+        "course_type": "基础护理/急救护理/儿科护理",
+        "difficulty": "基础版",
+        "status": "已开放",
+        "description": "面向在校护生，训练严重过敏反应早期识别、暂停可疑输入、保留静脉通道、及时呼救、基础氧疗与循环监测、抢救用物准备、药物核对配合、基础复评、家属安抚与SBAR汇报。",
+        "target_users": "在校护生",
+        "phase_script_roles": {
+            "课前测评": "academy_initial",
+            "模拟训练": "academy_initial",
+            "课后考核": "academy_variant",
+        },
+        "phase_script_labels": {
+            "课前测评": "过敏性休克抢救基础病例",
+            "模拟训练": "过敏性休克抢救基础病例",
+            "课后考核": "过敏性休克抢救变体病例",
+        },
+        "phase_tasks": {
+            "课前测评": "请根据患儿表现独立判断当前异常情况，并完成暂停可疑输入、呼救、氧疗监测、抢救配合、复评与汇报；不要求护生独立用药。",
+            "模拟训练": "请在训练模式下完成过敏性休克抢救基础教学训练。系统将提供步骤提示与原因说明。",
+            "课后考核": "请按考试要求独立完成变体病例，重点体现严重过敏反应早期识别、抢救启动、规范汇报与协作意识。",
+        },
+    }
+}
+ACADEMY_SCENARIO_DEFAULT_ID = "academy_anaphylaxis_rescue"
+
 WORKFLOW_RULES = {
-    "基线评估": {
-        "mode": "exam",
-        "script_role": "initial",
-        "script_label": "初始病例",
-        "display": "基线评估｜考试模式｜初始病例",
-        "task": "请按考试要求独立完成初始病例处置。系统不会提供步骤原因提示。",
+    "clinical": {
+        "基线评估": {
+            "mode": "exam",
+            "script_role": "initial",
+            "script_label": "初始病例",
+            "display": "基线评估｜考试模式｜初始病例",
+            "task": "请按考试要求独立完成初始病例处置。系统不会提供步骤原因提示。",
+        },
+        "模拟培训": {
+            "mode": "coach",
+            "script_role": "initial",
+            "script_label": "初始病例",
+            "display": "模拟培训｜训练模式｜初始病例",
+            "task": "请在训练模式下完成初始病例。系统将提供必要的步骤提示与复盘信息。",
+        },
+        "培训后考核": {
+            "mode": "exam",
+            "script_role": "variant",
+            "script_label": "变体病例 Variant A",
+            "display": "培训后考核｜考试模式｜变体病例 Variant A",
+            "task": "请按考试要求独立完成变体病例处置。系统不会提供步骤原因提示。",
+        },
     },
-    "模拟培训": {
-        "mode": "coach",
-        "script_role": "initial",
-        "script_label": "初始病例",
-        "display": "模拟培训｜训练模式｜初始病例",
-        "task": "请在训练模式下完成初始病例。系统将提供必要的步骤提示与复盘信息。",
-    },
-    "培训后考核": {
-        "mode": "exam",
-        "script_role": "variant",
-        "script_label": "变体病例 Variant A",
-        "display": "培训后考核｜考试模式｜变体病例 Variant A",
-        "task": "请按考试要求独立完成变体病例处置。系统不会提供步骤原因提示。",
+    "academy": {
+        "课前测评": {
+            "mode": "exam",
+            "script_role": "academy_initial",
+            "script_label": "学院过敏性休克基础病例",
+            "display": "课前测评｜考试模式｜学院过敏性休克基础病例",
+            "task": "请根据患儿表现独立判断当前异常情况，并完成暂停可疑输入、呼救、氧疗监测、抢救配合、复评与汇报；不要求护生独立用药。",
+        },
+        "模拟训练": {
+            "mode": "coach",
+            "script_role": "academy_initial",
+            "script_label": "学院过敏性休克基础病例",
+            "display": "模拟训练｜训练模式｜学院过敏性休克基础病例",
+            "task": "请在训练模式下完成过敏性休克抢救基础教学训练。系统将提供步骤提示与原因说明。",
+        },
+        "课后考核": {
+            "mode": "exam",
+            "script_role": "academy_variant",
+            "script_label": "学院过敏性休克变体病例",
+            "display": "课后考核｜考试模式｜学院过敏性休克变体病例",
+            "task": "请按考试要求独立完成变体病例，重点体现异常识别、及时呼救、初步处置、抢救配合、复评、规范汇报与身份边界意识。",
+        },
     },
 }
 
 
-def workflow_for_phase(phase: str) -> Dict[str, str]:
-    return WORKFLOW_RULES.get(phase, WORKFLOW_RULES["基线评估"])
+def current_system_mode() -> str:
+    mode = str(st.session_state.get("system_mode", "clinical") or "clinical")
+    return mode if mode in SYSTEM_MODE_OPTIONS else "clinical"
+
+
+def current_system_mode_label() -> str:
+    return SYSTEM_MODE_OPTIONS[current_system_mode()]["label"]
+
+
+def current_academy_scenario_id() -> str:
+    scenario_id = str(st.session_state.get("academy_scenario_id", "") or ACADEMY_SCENARIO_DEFAULT_ID)
+    return scenario_id if scenario_id in ACADEMY_SCENARIO_LIBRARY else ACADEMY_SCENARIO_DEFAULT_ID
+
+
+def current_academy_scenario() -> Dict[str, Any]:
+    return ACADEMY_SCENARIO_LIBRARY[current_academy_scenario_id()]
+
+
+def academy_scenario_options() -> List[str]:
+    return list(ACADEMY_SCENARIO_LIBRARY.keys())
+
+
+def academy_scenario_label(scenario_id: str) -> str:
+    item = ACADEMY_SCENARIO_LIBRARY.get(scenario_id, {})
+    status = item.get("status", "")
+    suffix = f"（{status}）" if status else ""
+    return f"{item.get('name', scenario_id)}{suffix}"
+
+
+def phase_options_for_mode(system_mode: Optional[str] = None) -> List[str]:
+    mode = system_mode or current_system_mode()
+    return ACADEMY_ASSESSMENT_PHASE_OPTIONS if mode == "academy" else CLINICAL_ASSESSMENT_PHASE_OPTIONS
+
+
+def default_phase_for_mode(system_mode: Optional[str] = None) -> str:
+    return phase_options_for_mode(system_mode)[0]
+
+
+def workflow_for_phase(phase: str, system_mode: Optional[str] = None) -> Dict[str, str]:
+    mode = system_mode or current_system_mode()
+    default_phase = default_phase_for_mode(mode)
+    if mode == "academy":
+        scenario = current_academy_scenario()
+        phase = phase if phase in ACADEMY_ASSESSMENT_PHASE_OPTIONS else default_phase
+        mode_value = "coach" if phase == "模拟训练" else "exam"
+        script_role = (scenario.get("phase_script_roles", {}) or {}).get(phase, "academy_initial")
+        script_label = (scenario.get("phase_script_labels", {}) or {}).get(phase, scenario.get("name", "学院情景"))
+        task = (scenario.get("phase_tasks", {}) or {}).get(phase, scenario.get("description", ""))
+        return {
+            "mode": mode_value,
+            "script_role": script_role,
+            "script_label": script_label,
+            "display": f"{phase}｜{'训练模式' if mode_value == 'coach' else '考试模式'}｜{scenario.get('name', '学院情景')}｜{script_label}",
+            "task": task,
+            "scenario_id": scenario.get("id", current_academy_scenario_id()),
+            "scenario_name": scenario.get("name", ""),
+            "scenario_category": scenario.get("category", ""),
+            "course_type": scenario.get("course_type", ""),
+            "difficulty": scenario.get("difficulty", ""),
+        }
+    rules = WORKFLOW_RULES.get(mode, WORKFLOW_RULES["clinical"])
+    return rules.get(phase, rules[default_phase])
 
 
 def normalize_initials(text: str) -> str:
@@ -129,6 +313,22 @@ def build_participant_id(campus: str, department: str, initials: str) -> str:
         return ""
     return f"{campus_code}{department_code}{initials_code}-{ensure_participant_suffix()}"
 
+STUDENT_LEVEL_CODES = {
+    "高职/大专": "GZ",
+    "本科": "BK",
+    "专升本": "ZSB",
+    "硕士及以上": "YJS",
+    "其他": "QT",
+}
+
+
+def build_academy_participant_id(student_level: str, initials: str) -> str:
+    level_code = STUDENT_LEVEL_CODES.get(student_level, "")
+    initials_code = normalize_initials(initials)
+    if not level_code or not initials_code:
+        return ""
+    return f"ACAD{level_code}{initials_code}-{ensure_participant_suffix()}"
+
 
 def participant_code_parts(campus: str, department: str, initials: str) -> Dict[str, str]:
     return {
@@ -142,7 +342,7 @@ def participant_code_parts(campus: str, department: str, initials: str) -> Dict[
 def list_scenarios() -> Dict[str, Path]:
     """Only expose the two bedside scripts requested for the web prototype."""
     items = []
-    role_order = {"initial": 0, "variant": 1}
+    role_order = {"initial": 0, "variant": 1, "academy_initial": 2, "academy_variant": 3}
     for path in sorted(SCENARIO_DIR.glob("*.json")):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -183,13 +383,19 @@ def safe_filename_part(text: str) -> str:
 def randomize_patient_profile(scenario: Dict[str, Any]) -> Dict[str, Any]:
     """Create a per-run patient profile without modifying the source JSON file.
 
-    Randomization is performed only when the user clicks start/reset. Streamlit
-    reruns caused by button clicks or UI refreshes will keep the active patient's
-    age and weight unchanged.
+    Clinical scripts keep the V1.3.4 age/weight randomization. Academy scripts
+    may declare ``patient.fixed_profile=True`` so the pre-test and post-test
+    teaching variants remain stable for content-validity review.
     """
-    rng = random.SystemRandom()
     randomized = json.loads(json.dumps(scenario, ensure_ascii=False))
     patient = randomized.setdefault("patient", {})
+    meta = randomized.get("scenario", {}) or {}
+    if patient.get("fixed_profile") or meta.get("target_group") == "nursing_student":
+        patient["randomized_profile"] = False
+        patient["randomization_rule"] = "fixed academy teaching case profile"
+        randomized.setdefault("baseline", {}).setdefault("vitals", {})["Temp"] = 36.8
+        return randomized
+    rng = random.SystemRandom()
     age = rng.randint(1, 11)
     weight = age * 2 + 8 if 1 <= age <= 6 else age * 3 + 2
     patient["age_years"] = age
@@ -207,6 +413,19 @@ def state_key() -> str:
 
 def init_session() -> None:
     defaults = {
+        "system_mode": "clinical",
+        "system_mode_selected": False,
+        "participant_type": "clinical_nurse",
+        "academy_scenario_selected": False,
+        "academy_scenario_id": ACADEMY_SCENARIO_DEFAULT_ID,
+        "academy_scenario_name": ACADEMY_SCENARIO_LIBRARY[ACADEMY_SCENARIO_DEFAULT_ID]["name"],
+        "academy_scenario_category": ACADEMY_SCENARIO_LIBRARY[ACADEMY_SCENARIO_DEFAULT_ID]["category"],
+        "academy_course_type": ACADEMY_SCENARIO_LIBRARY[ACADEMY_SCENARIO_DEFAULT_ID]["course_type"],
+        "academy_difficulty": ACADEMY_SCENARIO_LIBRARY[ACADEMY_SCENARIO_DEFAULT_ID]["difficulty"],
+        "school_name": "",
+        "student_level": "",
+        "student_grade": "",
+        "student_class": "",
         "participant_id": "",
         "participant_initials": "",
         "participant_unique_suffix": "",
@@ -243,6 +462,18 @@ def init_session() -> None:
         "profile_completed": False,
         "app_unlocked": False,
         "admin_unlocked": False,
+        "admin_scope": None,
+        "admin_scope_type": "",
+        "admin_last_generated_code": "",
+        "pending_academy_post_evaluation": False,
+        "pending_post_evaluation_report": None,
+        "pending_post_evaluation_reason": "",
+        "academy_post_evaluation_completed": False,
+        "academy_post_evaluation_time": "",
+        "sus_score": "",
+        "sus_level": "",
+        "teaching_experience_total": "",
+        "teaching_experience_mean": "",
         "page": "训练系统",
         "mode": "coach",
         "scenario_label": "",
@@ -399,9 +630,115 @@ def get_secret_value(name: str, default: str = "") -> str:
     return str(value or "")
 
 
+def _sha256_code(code: str) -> str:
+    return hashlib.sha256(str(code or "").strip().encode("utf-8")).hexdigest()
+
+
+def _random_code_suffix(length: int = 8) -> str:
+    alphabet = string.ascii_uppercase + string.digits
+    # Avoid visually confusing characters.
+    alphabet = alphabet.replace("O", "").replace("I", "").replace("0", "").replace("1", "")
+    return "".join(token_secrets.choice(alphabet) for _ in range(length))
+
+
+def load_org_access_records() -> List[Dict[str, Any]]:
+    if not ORG_ACCESS_CODES_PATH.exists():
+        return []
+    try:
+        data = json.loads(ORG_ACCESS_CODES_PATH.read_text(encoding="utf-8"))
+        return [x for x in data if isinstance(x, dict)] if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_org_access_records(records: List[Dict[str, Any]]) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    ORG_ACCESS_CODES_PATH.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def generate_org_admin_code(org_type: str, org_abbr: str, unit_abbr: str = "NURS") -> str:
+    prefix = "ACD" if org_type == "academy" else "CLN"
+    org_part = "".join(ch for ch in str(org_abbr or "ORG").upper() if ch.isalnum())[:8] or "ORG"
+    unit_part = "".join(ch for ch in str(unit_abbr or "NURS").upper() if ch.isalnum())[:8] or "NURS"
+    return f"{prefix}-{org_part}-{unit_part}-{_random_code_suffix(8)}"
+
+
+def find_org_scope_by_code(code: str) -> Optional[Dict[str, Any]]:
+    raw = str(code or "").strip()
+    if not raw:
+        return None
+    hashed = _sha256_code(raw)
+    for item in load_org_access_records():
+        if str(item.get("status", "active")) != "active":
+            continue
+        # Support both hashed codes and legacy plaintext demo codes.
+        if item.get("admin_code_hash") == hashed or item.get("admin_code") == raw:
+            return item
+    return None
+
+
+def record_matches_scope(record: Dict[str, Any], scope: Optional[Dict[str, Any]]) -> bool:
+    if not scope:
+        return True
+    code_type = str(scope.get("code_type", ""))
+    if code_type == "super_admin":
+        return True
+    if code_type == "clinical_admin":
+        mode = str(record.get("system_mode", "") or "clinical")
+        institution = str(record.get("institution", "") or record.get("hospital", ""))
+        department = str(record.get("department", ""))
+        return mode in ("", "clinical") and institution == str(scope.get("hospital_name", "")) and department == str(scope.get("department_name", ""))
+    if code_type == "academy_admin":
+        mode = str(record.get("system_mode", ""))
+        school = str(record.get("school_name", "") or record.get("institution", ""))
+        return mode == "academy" and school == str(scope.get("school_name", ""))
+    return False
+
+
+def raw_record_matches_scope(record: Dict[str, Any], scope: Optional[Dict[str, Any]]) -> bool:
+    if not scope:
+        return True
+    if "session" in record and isinstance(record.get("session"), dict):
+        session = record.get("session", {}) or {}
+        wrapped = {
+            "system_mode": session.get("system_mode", ""),
+            "institution": session.get("institution", ""),
+            "hospital": session.get("institution", ""),
+            "department": session.get("department", ""),
+            "school_name": session.get("school_name", ""),
+        }
+        return record_matches_scope(wrapped, scope)
+    return record_matches_scope(record, scope)
+
+
+def scope_label(scope: Optional[Dict[str, Any]]) -> str:
+    if not scope:
+        return "未限定"
+    code_type = str(scope.get("code_type", ""))
+    if code_type == "super_admin":
+        return "总管理员｜可查看全部数据"
+    if code_type == "clinical_admin":
+        return f"临床单位管理员｜{scope.get('hospital_name', '')} - {scope.get('department_name', '')}"
+    if code_type == "academy_admin":
+        return f"学院单位管理员｜{scope.get('school_name', '')}"
+    return "未知权限"
+
+
 def build_session_metadata(end_reason: str = "") -> Dict[str, Any]:
     return {
         "app_version": APP_VERSION,
+        "system_mode": current_system_mode(),
+        "system_mode_label": current_system_mode_label(),
+        "participant_type": SYSTEM_MODE_OPTIONS[current_system_mode()].get("participant_type", ""),
+        "academy_scenario_id": st.session_state.get("academy_scenario_id", ""),
+        "academy_scenario_name": st.session_state.get("academy_scenario_name", ""),
+        "academy_scenario_category": st.session_state.get("academy_scenario_category", ""),
+        "academy_course_type": st.session_state.get("academy_course_type", ""),
+        "academy_difficulty": st.session_state.get("academy_difficulty", ""),
+        "school_name": st.session_state.get("school_name", ""),
+        "student_level": st.session_state.get("student_level", ""),
+        "student_grade": st.session_state.get("student_grade", ""),
+        "student_class": st.session_state.get("student_class", ""),
         "session_id": st.session_state.get("session_id", ""),
         "participant_id": st.session_state.get("participant_id", "") or "anonymous",
         "participant_initials": st.session_state.get("participant_initials", ""),
@@ -423,6 +760,12 @@ def build_session_metadata(end_reason: str = "") -> Dict[str, Any]:
         "prior_experience_survey_time": st.session_state.get("prior_experience_survey_time", ""),
         "baseline_performance_completed": bool(st.session_state.get("baseline_performance_completed", False)),
         "baseline_stage_completed": bool(st.session_state.get("baseline_stage_completed", False)),
+        "academy_post_evaluation_completed": bool(st.session_state.get("academy_post_evaluation_completed", False)),
+        "academy_post_evaluation_time": st.session_state.get("academy_post_evaluation_time", ""),
+        "sus_score": st.session_state.get("sus_score", ""),
+        "sus_level": st.session_state.get("sus_level", ""),
+        "teaching_experience_total": st.session_state.get("teaching_experience_total", ""),
+        "teaching_experience_mean": st.session_state.get("teaching_experience_mean", ""),
         "training_batch": st.session_state.get("training_batch", ""),
         "assessment_phase": st.session_state.get("assessment_phase", ""),
         "collection_mode": st.session_state.get("collection_mode", "正式采集"),
@@ -441,7 +784,19 @@ def build_session_metadata(end_reason: str = "") -> Dict[str, Any]:
 def research_metadata_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
     """Fields used for multi-campus, multi-level research exports."""
     return {
+        "system_mode": session.get("system_mode", ""),
+        "system_mode_label": session.get("system_mode_label", ""),
+        "participant_type": session.get("participant_type", ""),
+        "academy_scenario_id": session.get("academy_scenario_id", ""),
+        "academy_scenario_name": session.get("academy_scenario_name", ""),
+        "academy_scenario_category": session.get("academy_scenario_category", ""),
+        "academy_course_type": session.get("academy_course_type", ""),
+        "academy_difficulty": session.get("academy_difficulty", ""),
         "institution": session.get("institution", ""),
+        "school_name": session.get("school_name", ""),
+        "student_level": session.get("student_level", ""),
+        "student_grade": session.get("student_grade", ""),
+        "student_class": session.get("student_class", ""),
         "campus": session.get("campus", ""),
         "campus_code": session.get("campus_code", ""),
         "department": session.get("department", ""),
@@ -461,6 +816,12 @@ def research_metadata_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
         "real_case_experience": session.get("real_case_experience", ""),
         "prior_experience_survey_completed": session.get("prior_experience_survey_completed", ""),
         "prior_experience_survey_time": session.get("prior_experience_survey_time", ""),
+        "academy_post_evaluation_completed": session.get("academy_post_evaluation_completed", ""),
+        "academy_post_evaluation_time": session.get("academy_post_evaluation_time", ""),
+        "sus_score": session.get("sus_score", ""),
+        "sus_level": session.get("sus_level", ""),
+        "teaching_experience_total": session.get("teaching_experience_total", ""),
+        "teaching_experience_mean": session.get("teaching_experience_mean", ""),
         "training_batch": session.get("training_batch", ""),
         "assessment_phase": session.get("assessment_phase", ""),
         "workflow_mode": session.get("workflow_mode", ""),
@@ -476,6 +837,21 @@ def enrich_report(report: Dict[str, Any], end_reason: str = "") -> Dict[str, Any
     enriched["session"] = build_session_metadata(end_reason=end_reason)
     enriched["end_reason"] = end_reason
     return enriched
+
+
+def academy_evaluation_from_report(report: Dict[str, Any]) -> Dict[str, Any]:
+    session = report.get("session", {}) or {}
+    post_eval = report.get("academy_post_evaluation", {}) or {}
+    sus = post_eval.get("sus", {}) or {}
+    teaching = post_eval.get("teaching_experience", {}) or {}
+    return {
+        "academy_post_evaluation_completed": post_eval.get("completed", session.get("academy_post_evaluation_completed", "")),
+        "academy_post_evaluation_time": post_eval.get("completed_time", session.get("academy_post_evaluation_time", "")),
+        "sus_score": sus.get("score", session.get("sus_score", "")),
+        "sus_level": sus.get("level", session.get("sus_level", "")),
+        "teaching_experience_total": teaching.get("total", session.get("teaching_experience_total", "")),
+        "teaching_experience_mean": teaching.get("mean", session.get("teaching_experience_mean", "")),
+    }
 
 
 def flatten_record(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -513,6 +889,7 @@ def flatten_record(report: Dict[str, Any]) -> Dict[str, Any]:
         "epi_target_dose_mg": timeline.get("epi_target_dose_mg", ""),
         "process_safety_issues": "；".join(map(str, issues)),
         "critical_missing": "；".join(map(str, missing)),
+        **academy_evaluation_from_report(report),
         "app_version": session.get("app_version", APP_VERSION),
     }
 
@@ -811,6 +1188,11 @@ ACTION_LABELS_CN = {
     "remove_iv": "拔除静脉通路",
     "establish_iv": "建立静脉通路",
     "sedation": "镇静药",
+    "allergy_identification": "识别疑似药物过敏反应",
+    "prepare_rescue_equipment": "准备抢救物品",
+    "academy_reassess": "基础复评",
+    "academy_family_communication": "基础家属沟通",
+    "academy_sbar_handoff": "简化SBAR汇报",
     "im_epinephrine_dose_verified": "肌注肾上腺素剂量确认",
     "im_epinephrine_underdose": "肌注肾上腺素剂量不足",
     "im_epinephrine_dose_high": "肌注肾上腺素剂量偏高",
@@ -833,6 +1215,11 @@ KEY_ACTION_COLUMNS = [
     ("second_reassessment_time", "second_reassessment"),
     ("family_communication_time", "family_communication"),
     ("sbar_time", "sbar_handoff"),
+    ("allergy_identification_time", "allergy_identification"),
+    ("prepare_rescue_equipment_time", "prepare_rescue_equipment"),
+    ("academy_reassess_time", "academy_reassess"),
+    ("academy_family_communication_time", "academy_family_communication"),
+    ("academy_sbar_handoff_time", "academy_sbar_handoff"),
 ]
 
 
@@ -1007,6 +1394,7 @@ def report_to_summary_record(report: Dict[str, Any], storage_source: str = "supa
         "completed_key_steps": "",
         "valid_completed_key_steps": "",
         "total_action_sequence": "",
+        **academy_evaluation_from_report(report),
         "app_version": session.get("app_version", APP_VERSION),
         "storage_source": storage_source,
     }
@@ -1126,11 +1514,24 @@ def build_action_detail_records_from_reports(reports: List[Dict[str, Any]], stor
     return rows
 
 
-PHASE_EXPORT_MAP = {
-    "基线评估": "baseline",
-    "模拟培训": "training",
-    "培训后考核": "post",
+PHASE_EXPORT_MAP_BY_MODE = {
+    "clinical": {
+        "基线评估": "baseline",
+        "模拟培训": "training",
+        "培训后考核": "post",
+    },
+    "academy": {
+        "课前测评": "baseline",
+        "模拟训练": "training",
+        "课后考核": "post",
+    },
 }
+# Backward-compatible clinical map.
+PHASE_EXPORT_MAP = PHASE_EXPORT_MAP_BY_MODE["clinical"]
+
+
+def phase_export_map_for_mode(system_mode: str) -> Dict[str, str]:
+    return PHASE_EXPORT_MAP_BY_MODE.get(system_mode or "clinical", PHASE_EXPORT_MAP_BY_MODE["clinical"])
 
 
 def _record_sort_value(record: Dict[str, Any]) -> str:
@@ -1157,28 +1558,44 @@ def _session_success(record: Optional[Dict[str, Any]]) -> str:
 
 
 def build_participant_analysis_records(summary_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Build one-row-per-participant records for paired pre/post analysis."""
-    groups: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    phase_counts: Dict[Tuple[str, str], Dict[str, int]] = {}
+    """Build one-row-per-participant records for paired pre/post analysis.
+
+    V1.3.1 supports both clinical and academy phase names while keeping the
+    baseline/training/post statistical columns stable.
+    """
+    groups: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    phase_counts: Dict[Tuple[str, str, str, str], Dict[str, int]] = {}
     for record in summary_records:
         if not isinstance(record, dict):
             continue
+        system_mode = str(record.get("system_mode", "") or "clinical")
+        if system_mode not in PHASE_EXPORT_MAP_BY_MODE:
+            system_mode = "clinical"
         participant_id = str(record.get("participant_id", "") or "anonymous")
         collection_mode = str(record.get("collection_mode", "") or "未标记")
-        key = (participant_id, collection_mode)
-        group = groups.setdefault(key, {"participant_id": participant_id, "collection_mode": collection_mode, "stages": {}})
+        scenario_id = str(record.get("academy_scenario_id", "") or "") if system_mode == "academy" else ""
+        key = (system_mode, scenario_id, participant_id, collection_mode)
+        group = groups.setdefault(
+            key,
+            {"system_mode": system_mode, "academy_scenario_id": scenario_id, "participant_id": participant_id, "collection_mode": collection_mode, "stages": {}},
+        )
         counts = phase_counts.setdefault(key, {})
+        phase_map = phase_export_map_for_mode(system_mode)
         phase = str(record.get("assessment_phase", "") or "")
-        if phase in PHASE_EXPORT_MAP:
+        if phase in phase_map:
             counts[phase] = counts.get(phase, 0) + 1
             current = group["stages"].get(phase)
             if current is None or _record_sort_value(record) >= _record_sort_value(current):
                 group["stages"][phase] = record
 
         for field in [
-            "institution", "campus", "campus_code", "department", "department_code", "participant_initials",
-            "department_type", "nurse_level", "years_experience", "professional_title", "education_level",
-            "prior_anaphylaxis_training", "prior_simulation_experience", "real_case_experience",
+            "system_mode", "system_mode_label", "participant_type", "academy_scenario_id", "academy_scenario_name",
+            "academy_scenario_category", "academy_course_type", "academy_difficulty", "institution", "school_name", "student_level",
+            "student_grade", "student_class", "campus", "campus_code", "department", "department_code",
+            "participant_initials", "department_type", "nurse_level", "years_experience", "professional_title",
+            "education_level", "prior_anaphylaxis_training", "prior_simulation_experience", "real_case_experience",
+            "academy_post_evaluation_completed", "academy_post_evaluation_time", "sus_score", "sus_level",
+            "teaching_experience_total", "teaching_experience_mean",
             "collection_mode_code", "collection_note",
         ]:
             if not group.get(field) and record.get(field) not in ("", None):
@@ -1186,13 +1603,27 @@ def build_participant_analysis_records(summary_records: List[Dict[str, Any]]) ->
 
     rows: List[Dict[str, Any]] = []
     for key, group in sorted(groups.items(), key=lambda item: item[0]):
+        system_mode = group.get("system_mode", "clinical") or "clinical"
+        phase_map = phase_export_map_for_mode(system_mode)
         stages = group.get("stages", {}) or {}
         counts = phase_counts.get(key, {})
         row: Dict[str, Any] = {
+            "system_mode": system_mode,
+            "system_mode_label": group.get("system_mode_label", SYSTEM_MODE_OPTIONS.get(system_mode, {}).get("label", "")),
+            "participant_type": group.get("participant_type", ""),
+            "academy_scenario_id": group.get("academy_scenario_id", ""),
+            "academy_scenario_name": group.get("academy_scenario_name", ""),
+            "academy_scenario_category": group.get("academy_scenario_category", ""),
+            "academy_course_type": group.get("academy_course_type", ""),
+            "academy_difficulty": group.get("academy_difficulty", ""),
             "participant_id": group.get("participant_id", ""),
             "collection_mode": group.get("collection_mode", ""),
             "collection_mode_code": group.get("collection_mode_code", ""),
             "institution": group.get("institution", ""),
+            "school_name": group.get("school_name", ""),
+            "student_level": group.get("student_level", ""),
+            "student_grade": group.get("student_grade", ""),
+            "student_class": group.get("student_class", ""),
             "campus": group.get("campus", ""),
             "campus_code": group.get("campus_code", ""),
             "department": group.get("department", ""),
@@ -1206,30 +1637,31 @@ def build_participant_analysis_records(summary_records: List[Dict[str, Any]]) ->
             "prior_anaphylaxis_training": group.get("prior_anaphylaxis_training", ""),
             "prior_simulation_experience": group.get("prior_simulation_experience", ""),
             "real_case_experience": group.get("real_case_experience", ""),
+            "academy_post_evaluation_completed": group.get("academy_post_evaluation_completed", ""),
+            "academy_post_evaluation_time": group.get("academy_post_evaluation_time", ""),
+            "sus_score": group.get("sus_score", ""),
+            "sus_level": group.get("sus_level", ""),
+            "teaching_experience_total": group.get("teaching_experience_total", ""),
+            "teaching_experience_mean": group.get("teaching_experience_mean", ""),
             "collection_note": group.get("collection_note", ""),
         }
 
-        for phase, prefix in PHASE_EXPORT_MAP.items():
+        stage_fields = [
+            "session_id", "created_at", "score", "score_percent", "end_time_seconds", "end_reason",
+            "final_grade", "epi_dose_status", "epi_delay_seconds", "valid_epi_time",
+            "fluid_bolus_valid", "steroid_valid", "process_safety_issue_count",
+            "critical_missing_count", "manual_rescue_completion", "valid_completed_key_steps",
+            "academy_post_evaluation_completed", "academy_post_evaluation_time", "sus_score", "sus_level",
+            "teaching_experience_total", "teaching_experience_mean",
+        ]
+        for phase, prefix in phase_map.items():
             record = stages.get(phase)
+            row[f"{prefix}_phase_name"] = phase
             row[f"{prefix}_recorded"] = _phase_recorded(record)
             row[f"{prefix}_success"] = _session_success(record)
             row[f"{prefix}_duplicate_count"] = max(0, counts.get(phase, 0) - 1)
-            if isinstance(record, dict):
-                for field in [
-                    "session_id", "created_at", "score", "score_percent", "end_time_seconds", "end_reason",
-                    "final_grade", "epi_dose_status", "epi_delay_seconds", "valid_epi_time",
-                    "fluid_bolus_valid", "steroid_valid", "process_safety_issue_count",
-                    "critical_missing_count", "manual_rescue_completion", "valid_completed_key_steps",
-                ]:
-                    row[f"{prefix}_{field}"] = record.get(field, "")
-            else:
-                for field in [
-                    "session_id", "created_at", "score", "score_percent", "end_time_seconds", "end_reason",
-                    "final_grade", "epi_dose_status", "epi_delay_seconds", "valid_epi_time",
-                    "fluid_bolus_valid", "steroid_valid", "process_safety_issue_count",
-                    "critical_missing_count", "manual_rescue_completion", "valid_completed_key_steps",
-                ]:
-                    row[f"{prefix}_{field}"] = ""
+            for field in stage_fields:
+                row[f"{prefix}_{field}"] = record.get(field, "") if isinstance(record, dict) else ""
 
         baseline_score = _as_number_or_blank(row.get("baseline_score"))
         post_score = _as_number_or_blank(row.get("post_score"))
@@ -1243,9 +1675,7 @@ def build_participant_analysis_records(summary_records: List[Dict[str, Any]]) ->
             and row.get("training_recorded") == "是"
             and row.get("post_recorded") == "是"
         )
-        row["has_duplicate_stage"] = _yes_no(any(int(row.get(f"{prefix}_duplicate_count", 0) or 0) > 0 for prefix in PHASE_EXPORT_MAP.values()))
-        # 正式主分析必须满足：正式采集 + 基线/模拟培训/培训后考核三阶段均有记录 + 无重复阶段。
-        # 仅有基线和培训后考核配对不足以判定可纳入主分析，因为中间训练阶段缺失会破坏教育干预闭环。
+        row["has_duplicate_stage"] = _yes_no(any(int(row.get(f"{prefix}_duplicate_count", 0) or 0) > 0 for prefix in phase_map.values()))
         row["formal_analysis_ready"] = _yes_no(
             row.get("collection_mode") == "正式采集"
             and row.get("all_three_stages_recorded") == "是"
@@ -1259,11 +1689,16 @@ def build_data_quality_records(summary_records: List[Dict[str, Any]]) -> List[Di
     participant_rows = build_participant_analysis_records(summary_records)
     issues: List[Dict[str, Any]] = []
     for row in participant_rows:
+        system_mode = str(row.get("system_mode", "clinical") or "clinical")
+        phase_map = phase_export_map_for_mode(system_mode)
         participant_id = row.get("participant_id", "")
         collection_mode = row.get("collection_mode", "")
-        for phase, prefix in PHASE_EXPORT_MAP.items():
+        for phase, prefix in phase_map.items():
             if row.get(f"{prefix}_recorded") != "是":
                 issues.append({
+                    "system_mode": system_mode,
+                    "academy_scenario_id": row.get("academy_scenario_id", ""),
+                    "academy_scenario_name": row.get("academy_scenario_name", ""),
                     "participant_id": participant_id,
                     "collection_mode": collection_mode,
                     "assessment_phase": phase,
@@ -1273,6 +1708,9 @@ def build_data_quality_records(summary_records: List[Dict[str, Any]]) -> List[Di
             duplicate_count = int(row.get(f"{prefix}_duplicate_count", 0) or 0)
             if duplicate_count > 0:
                 issues.append({
+                    "system_mode": system_mode,
+                    "academy_scenario_id": row.get("academy_scenario_id", ""),
+                    "academy_scenario_name": row.get("academy_scenario_name", ""),
                     "participant_id": participant_id,
                     "collection_mode": collection_mode,
                     "assessment_phase": phase,
@@ -1282,6 +1720,9 @@ def build_data_quality_records(summary_records: List[Dict[str, Any]]) -> List[Di
             end_time = _as_number_or_blank(row.get(f"{prefix}_end_time_seconds"))
             if end_time != "" and end_time < 60:
                 issues.append({
+                    "system_mode": system_mode,
+                    "academy_scenario_id": row.get("academy_scenario_id", ""),
+                    "academy_scenario_name": row.get("academy_scenario_name", ""),
                     "participant_id": participant_id,
                     "collection_mode": collection_mode,
                     "assessment_phase": phase,
@@ -1290,6 +1731,9 @@ def build_data_quality_records(summary_records: List[Dict[str, Any]]) -> List[Di
                 })
             if str(row.get(f"{prefix}_manual_rescue_completion", "")).lower() in ("true", "是", "1"):
                 issues.append({
+                    "system_mode": system_mode,
+                    "academy_scenario_id": row.get("academy_scenario_id", ""),
+                    "academy_scenario_name": row.get("academy_scenario_name", ""),
                     "participant_id": participant_id,
                     "collection_mode": collection_mode,
                     "assessment_phase": phase,
@@ -1298,6 +1742,7 @@ def build_data_quality_records(summary_records: List[Dict[str, Any]]) -> List[Di
                 })
         if row.get("collection_note"):
             issues.append({
+                "system_mode": system_mode,
                 "participant_id": participant_id,
                 "collection_mode": collection_mode,
                 "assessment_phase": "",
@@ -1307,8 +1752,16 @@ def build_data_quality_records(summary_records: List[Dict[str, Any]]) -> List[Di
     return issues
 
 
+def display_action_label(action: Dict[str, Any], sim: Optional[Simulator] = None) -> str:
+    aid = str(action.get("id", ""))
+    # In academy pre/post assessment, use neutral labels to avoid leaking the answer.
+    if current_system_mode() == "academy" and sim is not None and getattr(sim, "mode", "") == "exam":
+        return ACADEMY_EXAM_ACTION_LABELS.get(aid, str(action.get("label", aid)))
+    return str(action.get("label", aid))
+
+
 def action_label_map(sim: Simulator) -> Dict[str, str]:
-    return {str(a.get("id", "")): str(a.get("label", a.get("id", ""))) for a in sim.actions}
+    return {str(a.get("id", "")): display_action_label(a, sim) for a in sim.actions}
 
 
 def get_action_history_rows(sim: Simulator) -> List[Dict[str, Any]]:
@@ -1378,8 +1831,18 @@ def start_simulation(scenario_path: Path, mode: str, seed: int, participant_id: 
     st.session_state.pending_prior_experience_survey = False
     st.session_state.pending_completion_reason = ""
     st.session_state.pending_report = None
+    st.session_state.pending_academy_post_evaluation = False
+    st.session_state.pending_post_evaluation_report = None
+    st.session_state.pending_post_evaluation_reason = ""
+    if current_system_mode() == "academy" and st.session_state.get("assessment_phase") == "课后考核":
+        st.session_state.academy_post_evaluation_completed = False
+        st.session_state.academy_post_evaluation_time = ""
+        st.session_state.sus_score = ""
+        st.session_state.sus_level = ""
+        st.session_state.teaching_experience_total = ""
+        st.session_state.teaching_experience_mean = ""
     st.session_state.baseline_performance_completed = False
-    if st.session_state.get("assessment_phase") != "基线评估":
+    if st.session_state.get("assessment_phase") not in ("基线评估", "课前测评"):
         st.session_state.baseline_stage_completed = False
 
 
@@ -1411,7 +1874,95 @@ def _return_to_registration_after_save(report: Dict[str, Any], why: str) -> None
     st.session_state.result_saved = False
 
 
+def _needs_academy_post_evaluation() -> bool:
+    return bool(current_system_mode() == "academy" and st.session_state.get("assessment_phase") == "课后考核" and not st.session_state.get("academy_post_evaluation_completed", False))
+
+
+def _sus_level(score: float) -> str:
+    if score < 50:
+        return "可用性较差"
+    if score < 68:
+        return "可用性一般"
+    if score < 80:
+        return "可接受"
+    return "可用性较好"
+
+
+def compute_sus_score(values: List[int]) -> float:
+    total = 0
+    for idx, val in enumerate(values, start=1):
+        v = int(val)
+        if idx % 2 == 1:
+            total += v - 1
+        else:
+            total += 5 - v
+    return round(total * 2.5, 1)
+
+
+def render_academy_post_evaluation_survey() -> None:
+    st.markdown("### 课后评价｜系统可用性与教学体验")
+    st.caption("请在完成课后考核后填写。SUS用于评价系统可用性，教学体验问卷用于评价学习感受；二者不会计入抢救能力分数。")
+    with st.form("academy_post_evaluation_form", clear_on_submit=False):
+        st.markdown("#### SUS系统可用性问卷")
+        st.caption("1=非常不同意，5=非常同意。")
+        sus_values = []
+        for idx, item in enumerate(SUS_ITEMS, start=1):
+            sus_values.append(st.radio(f"SUS{idx}. {item}", [1, 2, 3, 4, 5], index=2, horizontal=True, key=f"sus_{idx}_{st.session_state.session_id}"))
+        st.markdown("#### 虚拟仿真教学体验问卷")
+        teaching_values = []
+        for idx, item in enumerate(TEACHING_EXPERIENCE_ITEMS, start=1):
+            teaching_values.append(st.radio(f"T{idx}. {item}", [1, 2, 3, 4, 5], index=2, horizontal=True, key=f"teach_{idx}_{st.session_state.session_id}"))
+        submitted = st.form_submit_button("提交课后评价并保存本阶段结果", type="primary", use_container_width=True)
+    if submitted:
+        sus_score = compute_sus_score([int(x) for x in sus_values])
+        teaching_total = int(sum(int(x) for x in teaching_values))
+        teaching_mean = round(teaching_total / len(teaching_values), 2) if teaching_values else ""
+        completed_time = datetime.now().isoformat(timespec="seconds")
+        st.session_state.academy_post_evaluation_completed = True
+        st.session_state.academy_post_evaluation_time = completed_time
+        st.session_state.sus_score = sus_score
+        st.session_state.sus_level = _sus_level(float(sus_score))
+        st.session_state.teaching_experience_total = teaching_total
+        st.session_state.teaching_experience_mean = teaching_mean
+        report = st.session_state.get("pending_post_evaluation_report")
+        why = st.session_state.get("pending_post_evaluation_reason", "standard_assessment_completed") or "standard_assessment_completed"
+        if not report and st.session_state.active_simulator is not None:
+            report = enrich_report(st.session_state.active_simulator.build_report(), end_reason=why)
+        if report is None:
+            st.error("未找到待保存的课后考核报告，请返回重新开始。")
+            return
+        report = json.loads(json.dumps(report, ensure_ascii=False))
+        report["session"] = build_session_metadata(end_reason=why)
+        report["end_reason"] = why
+        report["academy_post_evaluation"] = {
+            "completed": True,
+            "completed_time": completed_time,
+            "sus": {
+                "items": {f"SUS{idx}": int(val) for idx, val in enumerate(sus_values, start=1)},
+                "score": sus_score,
+                "level": st.session_state.sus_level,
+            },
+            "teaching_experience": {
+                "items": {f"T{idx}": int(val) for idx, val in enumerate(teaching_values, start=1)},
+                "total": teaching_total,
+                "mean": teaching_mean,
+            },
+        }
+        st.session_state.pending_academy_post_evaluation = False
+        st.session_state.pending_post_evaluation_report = None
+        st.session_state.pending_post_evaluation_reason = ""
+        _save_and_end_report(report, why)
+        st.success("课后评价已完成并保存。")
+        st.rerun()
+
+
 def _save_and_end_report(report: Dict[str, Any], why: str) -> None:
+    if _needs_academy_post_evaluation():
+        st.session_state.pending_academy_post_evaluation = True
+        st.session_state.pending_post_evaluation_report = report
+        st.session_state.pending_post_evaluation_reason = why
+        st.session_state.last_report = report
+        return
     out_dir = RUNS_DIR / st.session_state.session_id
     json_path, md_path = save_report(report, str(out_dir))
     if not st.session_state.get("result_saved", False):
@@ -1423,17 +1974,15 @@ def _save_and_end_report(report: Dict[str, Any], why: str) -> None:
 
 
 def _needs_baseline_post_survey(why: str = "") -> bool:
-    """Baseline prior-experience survey is required after any baseline ending.
+    """Prior-experience survey is required after any pretest/baseline ending.
 
-    The baseline performance must be locked first, then the prior training/simulation/real-case
-    exposure items are collected. This applies to success, timeout, failure, death branch,
-    transfer branch, and participant-confirmed completion; otherwise failed baseline records
-    would miss important covariates.
+    The performance record is locked first, then prior training/simulation/real-case exposure
+    items are collected. This avoids prompt leakage before the first independent attempt.
     """
-    return bool(
-        st.session_state.get("assessment_phase") == "基线评估"
-        and not st.session_state.get("prior_experience_survey_completed", False)
-    )
+    mode = current_system_mode()
+    phase = st.session_state.get("assessment_phase", "")
+    first_phase = (mode == "clinical" and phase == "基线评估") or (mode == "academy" and phase == "课前测评")
+    return bool(first_phase and not st.session_state.get("prior_experience_survey_completed", False))
 
 
 def finalize_if_done() -> None:
@@ -1456,17 +2005,30 @@ def finalize_if_done() -> None:
 
 
 def profile_required_missing() -> List[str]:
-    required = {
-        "campus": "院区/中心",
-        "department": "科室细分",
-        "participant_initials": "姓名首字母",
-        "participant_id": "系统生成参与者编号",
-        "nurse_level": "护理层级",
-        "years_experience": "工作年限",
-        "years_experience_confirmed": "工作年限核对",
-        "assessment_phase": "评估阶段",
-        "collection_mode": "采集模式",
-    }
+    if current_system_mode() == "academy":
+        required = {
+            "academy_scenario_id": "学院教学情景",
+            "school_name": "院校名称",
+            "student_level": "培养层次",
+            "student_grade": "年级/阶段",
+            "participant_initials": "姓名首字母",
+            "participant_id": "系统生成参与者编号",
+            "assessment_phase": "评估阶段",
+            "collection_mode": "采集模式",
+        }
+    else:
+        required = {
+            "institution": "医院全称",
+            "campus": "院区/中心",
+            "department": "科室细分",
+            "participant_initials": "姓名首字母",
+            "participant_id": "系统生成参与者编号",
+            "nurse_level": "护理层级",
+            "years_experience": "工作年限",
+            "years_experience_confirmed": "工作年限核对",
+            "assessment_phase": "评估阶段",
+            "collection_mode": "采集模式",
+        }
     missing = []
     for key, label in required.items():
         value = st.session_state.get(key, "")
@@ -1478,6 +2040,7 @@ def profile_required_missing() -> List[str]:
             missing.append(label)
     return missing
 
+
 def render_version_corner() -> None:
     st.markdown(
         f"<div class='version-corner'>版本：{html.escape(APP_VERSION)}｜仅用于护理教学、培训与科研</div>",
@@ -1486,13 +2049,15 @@ def render_version_corner() -> None:
 
 
 def render_participant_entry_page() -> None:
-    """Centered, wide research-registration page before entering the simulator."""
+    """Centered, wide registration page before entering the simulator."""
     render_version_corner()
+    mode = current_system_mode()
+    mode_label = current_system_mode_label()
     st.markdown(
         f"""
         <div class='login-hero'>
             <div class='login-title'>{html.escape(APP_TITLE)}</div>
-            <div class='login-subtitle'>多院区 · 多科室 · 多护理层级｜虚拟仿真训练与评估</div>
+            <div class='login-subtitle'>{html.escape(mode_label)}｜动态分支 · 虚拟仿真 · 教学/培训评价</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1500,14 +2065,168 @@ def render_participant_entry_page() -> None:
 
     outer_left, center, outer_right = st.columns([0.08, 0.84, 0.08])
     with center:
+        if st.session_state.get("last_completion_notice"):
+            st.success(st.session_state.get("last_completion_notice"))
+            st.session_state.last_completion_notice = ""
+
+        if mode == "academy":
+            scenario = current_academy_scenario()
+            st.markdown(
+                "<div class='login-card-title'>在校护生信息登记</div>"
+                f"<div class='login-card-desc'>学院模式面向高职/大专、本科及其他在校护生；当前已选择情景：{html.escape(scenario.get('name', ''))}。系统将自动生成匿名参与者编号，并写入训练报告和导出数据。</div>",
+                unsafe_allow_html=True,
+            )
+            st.container(border=True).markdown(
+                f"""
+                **已选教学情景：** {scenario.get('name', '')}  
+                **情景类别：** {scenario.get('category', '')}｜**适用课程：** {scenario.get('course_type', '')}｜**难度：** {scenario.get('difficulty', '')}  
+                {scenario.get('description', '')}
+                """
+            )
+            with st.form("academy_participant_profile_form", clear_on_submit=False):
+                st.markdown("##### 院校与护生信息")
+                a1, a2, a3 = st.columns([1.3, 1, 1], gap="large")
+                school_name = a1.text_input(
+                    "院校名称（必填）",
+                    value=st.session_state.school_name,
+                    placeholder="例如 ××职业学院 / ××大学护理学院",
+                )
+                level_options = ["", "高职/大专", "本科", "专升本", "硕士及以上", "其他"]
+                student_level = a2.selectbox(
+                    "培养层次（必填）",
+                    level_options,
+                    index=level_options.index(st.session_state.student_level) if st.session_state.student_level in level_options else 0,
+                )
+                grade_options = ACADEMY_GRADE_OPTIONS
+                student_grade = a3.selectbox(
+                    "年级/阶段（必填）",
+                    grade_options,
+                    index=grade_options.index(st.session_state.student_grade) if st.session_state.student_grade in grade_options else 0,
+                )
+
+                b1, b2, b3 = st.columns([1, 1, 1], gap="large")
+                student_class = b1.text_input(
+                    "班级/小组（选填）",
+                    value=st.session_state.student_class,
+                    placeholder="例如 2026级护理1班 / A组",
+                )
+                participant_initials = b2.text_input(
+                    "姓名首字母（必填）",
+                    value=st.session_state.participant_initials,
+                    placeholder="例如 王思席填 WSX",
+                    max_chars=8,
+                )
+                collection_mode = b3.selectbox(
+                    "采集模式（必填）",
+                    COLLECTION_MODE_OPTIONS,
+                    index=COLLECTION_MODE_OPTIONS.index(st.session_state.collection_mode)
+                    if st.session_state.collection_mode in COLLECTION_MODE_OPTIONS else 0,
+                )
+
+                preview_id = build_academy_participant_id(student_level, participant_initials)
+                id_col, note_col = st.columns([1.1, 1], gap="large")
+                id_col.text_input(
+                    "系统生成参与者编号（自动生成，不需手动填写）",
+                    value=preview_id,
+                    disabled=True,
+                )
+                note_col.markdown(
+                    f"""
+                    <div class='id-help-box'>
+                        编码规则：ACAD + 培养层次代码 + 姓名首字母 + 防重复后缀<br>
+                        当前模式：{html.escape(mode_label)} / {html.escape(scenario.get('name', ''))}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                phase_options = phase_options_for_mode("academy")
+                c1, c2 = st.columns([1, 1], gap="large")
+                assessment_phase = c1.selectbox(
+                    "评估阶段（必填）",
+                    phase_options,
+                    index=phase_options.index(st.session_state.assessment_phase) if st.session_state.assessment_phase in phase_options else 0,
+                )
+                workflow_preview = workflow_for_phase(assessment_phase, "academy")
+                c2.markdown(
+                    f"<div class='form-note'>阶段确认：{html.escape(workflow_preview.get('display', ''))}。采集模式：{html.escape(collection_mode)}。</div>",
+                    unsafe_allow_html=True,
+                )
+                collection_note = st.text_area(
+                    "现场备注/异常记录（选填）",
+                    value=st.session_state.get("collection_note", ""),
+                    placeholder="如教师干预、中途断网、误点后重做等；无异常可留空。",
+                    height=80,
+                )
+                st.markdown(
+                    f"<div class='form-note'>说明：当前情景为{html.escape(scenario.get('name', ''))}。学院模式不要求护生独立完成完整临床抢救，重点记录早期识别、停止可疑药物、呼救协作、给氧监测、抢救配合、基础复评、沟通与汇报能力。</div>",
+                    unsafe_allow_html=True,
+                )
+                submitted = st.form_submit_button("保存信息并进入学院模式", type="primary", use_container_width=True)
+
+            if submitted:
+                initials_clean = normalize_initials(participant_initials)
+                generated_id = build_academy_participant_id(student_level, initials_clean)
+                old_participant_id = st.session_state.get("participant_id", "")
+                participant_changed = bool(old_participant_id and generated_id and generated_id != old_participant_id)
+                if participant_changed:
+                    st.session_state.prior_anaphylaxis_training = ""
+                    st.session_state.prior_simulation_experience = ""
+                    st.session_state.real_case_experience = ""
+                    st.session_state.prior_experience_survey_completed = False
+                    st.session_state.prior_experience_survey_time = ""
+                    st.session_state.baseline_performance_completed = False
+                    st.session_state.baseline_stage_completed = False
+
+                st.session_state.participant_initials = initials_clean
+                st.session_state.participant_id = generated_id
+                st.session_state.participant_type = "nursing_student"
+                st.session_state.academy_scenario_id = scenario.get("id", current_academy_scenario_id())
+                st.session_state.academy_scenario_name = scenario.get("name", "")
+                st.session_state.academy_scenario_category = scenario.get("category", "")
+                st.session_state.academy_course_type = scenario.get("course_type", "")
+                st.session_state.academy_difficulty = scenario.get("difficulty", "")
+                st.session_state.school_name = school_name.strip()
+                st.session_state.student_level = student_level.strip()
+                st.session_state.student_grade = student_grade.strip()
+                st.session_state.student_class = student_class.strip()
+                st.session_state.institution = school_name.strip()
+                st.session_state.campus = ""
+                st.session_state.campus_code = "ACAD"
+                st.session_state.department = "学院教学"
+                st.session_state.department_code = "ACAD"
+                st.session_state.department_type = "护生教学"
+                st.session_state.nurse_level = f"护生-{student_level.strip()}" if student_level.strip() else ""
+                st.session_state.years_experience = 0.0
+                st.session_state.years_experience_confirmed = True
+                st.session_state.professional_title = ""
+                st.session_state.education_level = student_level.strip()
+                st.session_state.collection_mode = collection_mode.strip()
+                st.session_state.collection_note = collection_note.strip()
+                st.session_state.training_batch = student_class.strip()
+                st.session_state.assessment_phase = assessment_phase.strip()
+                workflow = workflow_for_phase(st.session_state.assessment_phase, "academy")
+                st.session_state.workflow_mode = workflow.get("mode", "exam")
+                st.session_state.workflow_script_role = workflow.get("script_role", "academy_initial")
+                st.session_state.workflow_display = workflow.get("display", "")
+                st.session_state.workflow_locked = True
+                st.session_state.mode = st.session_state.workflow_mode
+                st.session_state.attempt_no = 1
+
+                missing = profile_required_missing()
+                if missing:
+                    st.error("请先完整填写：" + "、".join(missing))
+                else:
+                    st.session_state.profile_completed = True
+                    st.success(f"登记信息已保存。系统生成参与者编号：{generated_id}")
+                    st.rerun()
+            return
+
         st.markdown(
             "<div class='login-card-title'>受试者信息登记</div>"
             "<div class='login-card-desc'>请按院区、科室和姓名首字母完成登记。系统将自动生成匿名参与者编号，并写入训练报告和云端数据库。</div>",
             unsafe_allow_html=True,
         )
-        if st.session_state.get("last_completion_notice"):
-            st.success(st.session_state.get("last_completion_notice"))
-            st.session_state.last_completion_notice = ""
 
         with st.form("participant_profile_form", clear_on_submit=False):
             st.markdown("##### 基本身份信息")
@@ -1515,7 +2234,13 @@ def render_participant_entry_page() -> None:
             campus_options = [""] + list(CAMPUS_CODES.keys())
             department_options = [""] + list(DEPARTMENT_CODES.keys())
 
-            c1, c2, c3 = st.columns([1, 1, 1], gap="large")
+            c0, c1, c2, c3 = st.columns([1.3, 1, 1, 1], gap="large")
+            institution = c0.text_input(
+                "医院全称（必填）",
+                value=st.session_state.institution or DEFAULT_INSTITUTION,
+                placeholder="请填写医院全称，如：四川大学华西第二医院",
+            )
+            c0.caption("请务必填写医院全称；当前默认四川大学华西第二医院，后续新增医院时可自由输入。")
             campus = c1.selectbox(
                 "院区/中心（必填）",
                 campus_options,
@@ -1585,11 +2310,12 @@ def render_participant_entry_page() -> None:
                 edu_options,
                 index=edu_options.index(st.session_state.education_level) if st.session_state.education_level in edu_options else 0,
             )
+            phase_options = phase_options_for_mode("clinical")
             assessment_phase = n5.selectbox(
                 "评估阶段（必填）",
-                ASSESSMENT_PHASE_OPTIONS,
-                index=ASSESSMENT_PHASE_OPTIONS.index(st.session_state.assessment_phase)
-                if st.session_state.assessment_phase in ASSESSMENT_PHASE_OPTIONS else 0,
+                phase_options,
+                index=phase_options.index(st.session_state.assessment_phase)
+                if st.session_state.assessment_phase in phase_options else 0,
             )
             collection_mode = n6.selectbox(
                 "采集模式（必填）",
@@ -1598,7 +2324,7 @@ def render_participant_entry_page() -> None:
                 if st.session_state.collection_mode in COLLECTION_MODE_OPTIONS else 0,
             )
 
-            workflow_preview = workflow_for_phase(assessment_phase)
+            workflow_preview = workflow_for_phase(assessment_phase, "clinical")
             st.markdown(
                 f"<div class='form-note'>阶段确认：{html.escape(workflow_preview.get('display', ''))}。"
                 f"采集模式：{html.escape(collection_mode)}。正式收数据时请勿选择测试演练。</div>",
@@ -1636,9 +2362,10 @@ def render_participant_entry_page() -> None:
 
             st.session_state.participant_initials = initials_clean
             st.session_state.participant_id = generated_id
+            st.session_state.participant_type = "clinical_nurse"
             st.session_state.campus_code = parts.get("campus_code", "")
             st.session_state.department_code = parts.get("department_code", "")
-            st.session_state.institution = DEFAULT_INSTITUTION
+            st.session_state.institution = institution.strip() or DEFAULT_INSTITUTION
             st.session_state.campus = campus.strip()
             st.session_state.department = department.strip()
             st.session_state.department_type = department.strip()
@@ -1649,11 +2376,15 @@ def render_participant_entry_page() -> None:
             st.session_state.education_level = education_level.strip()
             st.session_state.collection_mode = collection_mode.strip()
             st.session_state.collection_note = collection_note.strip()
+            st.session_state.school_name = ""
+            st.session_state.student_level = ""
+            st.session_state.student_grade = ""
+            st.session_state.student_class = ""
             # 既往过敏反应培训/仿真培训/真实处理经历不在登记页采集，
             # 仅在基线评估操作完成后以补充问卷形式采集一次，避免提示效应。
             st.session_state.training_batch = ""
             st.session_state.assessment_phase = assessment_phase.strip()
-            workflow = workflow_for_phase(st.session_state.assessment_phase)
+            workflow = workflow_for_phase(st.session_state.assessment_phase, "clinical")
             st.session_state.workflow_mode = workflow.get("mode", "exam")
             st.session_state.workflow_script_role = workflow.get("script_role", "initial")
             st.session_state.workflow_display = workflow.get("display", "")
@@ -1669,8 +2400,26 @@ def render_participant_entry_page() -> None:
                 st.success(f"登记信息已保存。系统生成参与者编号：{generated_id}")
                 st.rerun()
 
+
 def render_sidebar() -> None:
-    st.sidebar.title("V1.2.11 控制台")
+    st.sidebar.title("V1.3.3 控制台")
+    mode = current_system_mode()
+    mode_label = current_system_mode_label()
+    st.sidebar.caption(f"当前模式：{mode_label}")
+    if st.sidebar.button("切换临床/学院模式", use_container_width=True, disabled=st.session_state.active_simulator is not None):
+        st.session_state.system_mode_selected = False
+        st.session_state.academy_scenario_selected = False
+        st.session_state.profile_completed = False
+        st.session_state.active_simulator = None
+        st.session_state.ended = False
+        st.rerun()
+    if mode == "academy" and st.sidebar.button("重新选择学院情景", use_container_width=True, disabled=st.session_state.active_simulator is not None):
+        st.session_state.academy_scenario_selected = False
+        st.session_state.profile_completed = False
+        st.session_state.active_simulator = None
+        st.session_state.ended = False
+        st.rerun()
+
     st.session_state.page = st.sidebar.radio(
         "页面",
         options=["训练系统", "管理员后台"],
@@ -1682,25 +2431,31 @@ def render_sidebar() -> None:
         return
 
     if not st.session_state.get("profile_completed", False):
-        st.sidebar.info("请先在主界面完成受试者信息登记。")
+        st.sidebar.info("请先在主界面完成信息登记。")
         return
 
-    st.sidebar.subheader("受试者摘要")
-    st.sidebar.caption(
-        f"编号：{st.session_state.participant_id}  \n"
-        f"单位：{st.session_state.institution}｜{st.session_state.campus}  \n"
-        f"科室：{st.session_state.department}  \n"
-        f"层级：{st.session_state.nurse_level}｜年限：{st.session_state.years_experience}年  \n"
-        f"采集模式：{st.session_state.get('collection_mode', '')}"
-    )
-    if st.sidebar.button("重新填写受试者信息", use_container_width=True):
+    st.sidebar.subheader("对象摘要")
+    if mode == "academy":
+        st.sidebar.caption(f"""编号：{st.session_state.participant_id}
+院校：{st.session_state.school_name}
+情景：{st.session_state.get('academy_scenario_name', '')}
+层次：{st.session_state.student_level}｜阶段：{st.session_state.student_grade}
+班级/小组：{st.session_state.student_class or '未填写'}
+采集模式：{st.session_state.get('collection_mode', '')}""")
+    else:
+        st.sidebar.caption(f"""编号：{st.session_state.participant_id}
+单位：{st.session_state.institution}｜{st.session_state.campus}
+科室：{st.session_state.department}
+层级：{st.session_state.nurse_level}｜年限：{st.session_state.years_experience}年
+采集模式：{st.session_state.get('collection_mode', '')}""")
+    if st.sidebar.button("重新填写对象信息", use_container_width=True):
         st.session_state.profile_completed = False
         st.session_state.active_simulator = None
         st.session_state.ended = False
         st.rerun()
 
     st.sidebar.subheader("本阶段任务")
-    workflow = workflow_for_phase(st.session_state.get("assessment_phase", "基线评估"))
+    workflow = workflow_for_phase(st.session_state.get("assessment_phase", default_phase_for_mode(mode)), mode)
     st.session_state.workflow_mode = workflow.get("mode", "exam")
     st.session_state.workflow_script_role = workflow.get("script_role", "initial")
     st.session_state.workflow_display = workflow.get("display", "")
@@ -1710,6 +2465,8 @@ def render_sidebar() -> None:
     st.sidebar.markdown(
         f"""
         <div style="border:1px solid #E5E7EB;border-radius:14px;padding:0.85rem 0.9rem;background:#F8FAFC;margin-bottom:0.75rem;">
+            <div style="font-size:0.85rem;color:#64748B;margin-bottom:0.25rem;">系统模式</div>
+            <div style="font-size:1.02rem;font-weight:750;color:#0F172A;margin-bottom:0.55rem;">{html.escape(mode_label)}</div>
             <div style="font-size:0.85rem;color:#64748B;margin-bottom:0.25rem;">评估阶段</div>
             <div style="font-size:1.05rem;font-weight:700;color:#0F172A;margin-bottom:0.55rem;">{html.escape(st.session_state.get('assessment_phase', ''))}</div>
             <div style="font-size:0.85rem;color:#64748B;margin-bottom:0.25rem;">锁定流程</div>
@@ -2319,36 +3076,239 @@ def render_patient_status(sim: Simulator, scenario: Dict[str, Any], changes: Dic
 
 def render_intro() -> None:
     compact_header()
-    st.success("受试者信息已登记。请在左侧查看本阶段任务，然后点击“开始/重置本阶段任务”。")
+    st.success(f"{current_system_mode_label()}对象信息已登记。请在左侧查看本阶段任务，然后点击“开始/重置本阶段任务”。")
 
     left, right = st.columns([1.15, 1], gap="large")
     with left:
         st.markdown("#### 当前登记信息")
-        info_rows = [
-            {"项目": "参与者编号", "内容": st.session_state.get("participant_id", "")},
-            {"项目": "单位/医院", "内容": st.session_state.get("institution", "")},
-            {"项目": "院区/中心", "内容": st.session_state.get("campus", "")},
-            {"项目": "院区代码", "内容": st.session_state.get("campus_code", "")},
-            {"项目": "科室细分", "内容": st.session_state.get("department", "")},
-            {"项目": "科室代码", "内容": st.session_state.get("department_code", "")},
-            {"项目": "姓名首字母", "内容": st.session_state.get("participant_initials", "")},
-            {"项目": "护理层级", "内容": st.session_state.get("nurse_level", "")},
-            {"项目": "工作年限", "内容": f"{st.session_state.get('years_experience', '')} 年"},
-            {"项目": "评估阶段", "内容": st.session_state.get("assessment_phase", "")},
-            {"项目": "采集模式", "内容": st.session_state.get("collection_mode", "")},
-        ]
+        if current_system_mode() == "academy":
+            info_rows = [
+                {"项目": "系统模式", "内容": current_system_mode_label()},
+                {"项目": "教学情景", "内容": st.session_state.get("academy_scenario_name", "")},
+                {"项目": "情景类别", "内容": st.session_state.get("academy_scenario_category", "")},
+                {"项目": "适用课程", "内容": st.session_state.get("academy_course_type", "")},
+                {"项目": "参与者编号", "内容": st.session_state.get("participant_id", "")},
+                {"项目": "院校名称", "内容": st.session_state.get("school_name", "")},
+                {"项目": "培养层次", "内容": st.session_state.get("student_level", "")},
+                {"项目": "年级/阶段", "内容": st.session_state.get("student_grade", "")},
+                {"项目": "班级/小组", "内容": st.session_state.get("student_class", "")},
+                {"项目": "姓名首字母", "内容": st.session_state.get("participant_initials", "")},
+                {"项目": "评估阶段", "内容": st.session_state.get("assessment_phase", "")},
+                {"项目": "采集模式", "内容": st.session_state.get("collection_mode", "")},
+            ]
+        else:
+            info_rows = [
+                {"项目": "系统模式", "内容": current_system_mode_label()},
+                {"项目": "参与者编号", "内容": st.session_state.get("participant_id", "")},
+                {"项目": "单位/医院", "内容": st.session_state.get("institution", "")},
+                {"项目": "院区/中心", "内容": st.session_state.get("campus", "")},
+                {"项目": "院区代码", "内容": st.session_state.get("campus_code", "")},
+                {"项目": "科室细分", "内容": st.session_state.get("department", "")},
+                {"项目": "科室代码", "内容": st.session_state.get("department_code", "")},
+                {"项目": "姓名首字母", "内容": st.session_state.get("participant_initials", "")},
+                {"项目": "护理层级", "内容": st.session_state.get("nurse_level", "")},
+                {"项目": "工作年限", "内容": f"{st.session_state.get('years_experience', '')} 年"},
+                {"项目": "评估阶段", "内容": st.session_state.get("assessment_phase", "")},
+                {"项目": "采集模式", "内容": st.session_state.get("collection_mode", "")},
+            ]
         st.dataframe(info_rows, use_container_width=True, hide_index=True)
 
     with right:
-        st.container(border=True).markdown(
+        if current_system_mode() == "academy":
+            scenario_name = st.session_state.get("academy_scenario_name", "")
+            instruction = f"""
+            **本阶段使用说明**
+
+            学院模式面向在校护生，采用通用情景库框架；当前已选择“{scenario_name}”情景，重点训练早期识别、停止可疑药物、呼救协作、给氧监测、准备肾上腺素及抢救物品、基础复评、家属安抚与简化SBAR汇报。
+
+            本模式不要求护生独立决策或独立实施肾上腺素给药、快速补液或高级生命支持，但要求其知道肾上腺素是一线急救药物，并能完成抢救配合与规范汇报。操作过程中请勿刷新页面、关闭页面或使用浏览器返回键。系统会自动记录操作过程，并在本阶段完成后返回登记界面。
             """
+        else:
+            instruction = """
             **本阶段使用说明**
 
             请确认左侧显示的评估阶段与本人信息无误，然后点击“开始/重置本阶段任务”。进入情境后，请根据页面显示的患儿状态和个人临床判断独立完成操作。
 
             操作过程中请勿刷新页面、关闭页面或使用浏览器返回键。系统会自动记录操作过程，并在本阶段完成后返回登记界面，用于选择下一阶段或下一位受试者。
             """
+        st.container(border=True).markdown(instruction)
+
+
+def reset_for_mode_selection(system_mode: str) -> None:
+    st.session_state.system_mode = system_mode
+    st.session_state.system_mode_selected = True
+    st.session_state.participant_type = SYSTEM_MODE_OPTIONS[system_mode].get("participant_type", "")
+    st.session_state.academy_scenario_selected = False if system_mode == "academy" else True
+    if system_mode == "academy":
+        scenario = ACADEMY_SCENARIO_LIBRARY[ACADEMY_SCENARIO_DEFAULT_ID]
+        st.session_state.academy_scenario_id = scenario["id"]
+        st.session_state.academy_scenario_name = scenario["name"]
+        st.session_state.academy_scenario_category = scenario["category"]
+        st.session_state.academy_course_type = scenario["course_type"]
+        st.session_state.academy_difficulty = scenario["difficulty"]
+    st.session_state.profile_completed = False
+    st.session_state.active_simulator = None
+    st.session_state.active_scenario = None
+    st.session_state.active_scenario_path = ""
+    st.session_state.active_script_name = ""
+    st.session_state.ended = False
+    st.session_state.last_report = None
+    st.session_state.last_report_paths = None
+    st.session_state.result_saved = False
+    st.session_state.pending_prior_experience_survey = False
+    st.session_state.assessment_phase = default_phase_for_mode(system_mode)
+    workflow = workflow_for_phase(st.session_state.assessment_phase, system_mode)
+    st.session_state.workflow_mode = workflow.get("mode", "exam")
+    st.session_state.workflow_script_role = workflow.get("script_role", "initial")
+    st.session_state.workflow_display = workflow.get("display", "")
+    st.session_state.workflow_locked = True
+    st.session_state.mode = st.session_state.workflow_mode
+    st.session_state.participant_id = ""
+    st.session_state.participant_initials = ""
+    st.session_state.participant_unique_suffix = ""
+    ensure_participant_suffix()
+    st.session_state.collection_mode = "正式采集"
+    st.session_state.collection_note = ""
+    if system_mode == "academy":
+        st.session_state.institution = ""
+        st.session_state.campus = ""
+        st.session_state.department = "学院教学"
+        st.session_state.department_type = "护生教学"
+        st.session_state.campus_code = "ACAD"
+        st.session_state.department_code = "ACAD"
+        st.session_state.nurse_level = ""
+        st.session_state.years_experience = 0.0
+        st.session_state.years_experience_confirmed = True
+        st.session_state.professional_title = ""
+        st.session_state.education_level = ""
+    else:
+        st.session_state.institution = DEFAULT_INSTITUTION
+        st.session_state.school_name = ""
+        st.session_state.student_level = ""
+        st.session_state.student_grade = ""
+        st.session_state.student_class = ""
+        st.session_state.campus = ""
+        st.session_state.department = ""
+        st.session_state.department_type = ""
+        st.session_state.campus_code = ""
+        st.session_state.department_code = ""
+        st.session_state.years_experience_confirmed = False
+
+
+def select_academy_scenario(scenario_id: str) -> None:
+    scenario = ACADEMY_SCENARIO_LIBRARY.get(scenario_id, ACADEMY_SCENARIO_LIBRARY[ACADEMY_SCENARIO_DEFAULT_ID])
+    st.session_state.academy_scenario_id = scenario["id"]
+    st.session_state.academy_scenario_name = scenario["name"]
+    st.session_state.academy_scenario_category = scenario["category"]
+    st.session_state.academy_course_type = scenario["course_type"]
+    st.session_state.academy_difficulty = scenario["difficulty"]
+    st.session_state.academy_scenario_selected = True
+    st.session_state.profile_completed = False
+    st.session_state.active_simulator = None
+    st.session_state.active_scenario = None
+    st.session_state.active_scenario_path = ""
+    st.session_state.ended = False
+    st.session_state.last_report = None
+    st.session_state.result_saved = False
+    st.session_state.assessment_phase = default_phase_for_mode("academy")
+    workflow = workflow_for_phase(st.session_state.assessment_phase, "academy")
+    st.session_state.workflow_mode = workflow.get("mode", "exam")
+    st.session_state.workflow_script_role = workflow.get("script_role", "academy_initial")
+    st.session_state.workflow_display = workflow.get("display", "")
+    st.session_state.workflow_locked = True
+    st.session_state.mode = st.session_state.workflow_mode
+
+
+def render_academy_scenario_selection_page() -> bool:
+    if current_system_mode() != "academy":
+        return True
+    if st.session_state.get("academy_scenario_selected", False):
+        return True
+    render_version_corner()
+    st.markdown(
+        f"""
+        <div class='login-hero'>
+            <div class='login-title'>学院模式｜护理基础能力情景库</div>
+            <div class='login-subtitle'>请选择本次教学/测评使用的虚拟仿真情景</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    left, center, right = st.columns([0.12, 0.76, 0.12], gap="large")
+    with center:
+        st.markdown(
+            "<div class='login-card-desc'>学院模式保留通用情景库框架。当前情景库中仅开放一个情景，后续可在同一框架下继续增加输液反应、低血糖、跌倒/坠床、气道梗阻等其他教学情景。</div>",
+            unsafe_allow_html=True,
         )
+        selected_id = st.selectbox(
+            "教学情景（当前仅开放1项）",
+            academy_scenario_options(),
+            index=academy_scenario_options().index(current_academy_scenario_id()) if current_academy_scenario_id() in academy_scenario_options() else 0,
+            format_func=academy_scenario_label,
+        )
+        scenario = ACADEMY_SCENARIO_LIBRARY[selected_id]
+        st.container(border=True).markdown(
+            f"""
+            **情景名称：** {scenario.get('name', '')}  
+            **情景类别：** {scenario.get('category', '')}  
+            **适用课程：** {scenario.get('course_type', '')}  
+            **难度层级：** {scenario.get('difficulty', '')}  
+            **开放状态：** {scenario.get('status', '')}  
+
+            {scenario.get('description', '')}
+            """
+        )
+        c1, c2 = st.columns([1, 1], gap="large")
+        with c1:
+            if st.button("返回模式选择", use_container_width=True):
+                st.session_state.system_mode_selected = False
+                st.session_state.academy_scenario_selected = False
+                st.rerun()
+        with c2:
+            if st.button("进入该情景", type="primary", use_container_width=True):
+                select_academy_scenario(selected_id)
+                st.rerun()
+    return False
+
+
+def render_system_mode_selection_page() -> bool:
+    if st.session_state.get("system_mode_selected", False):
+        return True
+    render_version_corner()
+    st.markdown(
+        f"""
+        <div class='login-hero'>
+            <div class='login-title'>{html.escape(APP_TITLE)}</div>
+            <div class='login-subtitle'>请选择进入场景：临床培训或学院教学</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    left, c1, c2, right = st.columns([0.08, 0.42, 0.42, 0.08], gap="large")
+    with c1:
+        st.container(border=True).markdown(
+            """
+            ### 临床模式
+            面向临床护士、低年资护士及科室培训对象。  
+            保留原系统的严重过敏反应/过敏性休克动态分支、剂量核对、补液、复评、SBAR与家属沟通流程。
+            """
+        )
+        if st.button("进入临床模式", type="primary", use_container_width=True):
+            reset_for_mode_selection("clinical")
+            st.rerun()
+    with c2:
+        st.container(border=True).markdown(
+            """
+            ### 学院模式
+            面向高职/大专、本科及其他在校护生。  
+            进入后先选择“学院情景库”中的教学情景；当前情景库仅开放“严重过敏反应/过敏性休克抢救”1个情景。
+            """
+        )
+        if st.button("进入学院模式", type="primary", use_container_width=True):
+            reset_for_mode_selection("academy")
+            st.rerun()
+    st.info("说明：临床模式不改变原系统逻辑；学院模式保留通用情景库框架，当前仅开放严重过敏反应/过敏性休克抢救情景。两类数据在报告中通过 system_mode 字段区分，学院数据另通过 academy_scenario_id 区分情景。")
+    return False
 
 
 def require_app_access() -> bool:
@@ -2413,20 +3373,118 @@ def render_action_history(sim: Simulator) -> None:
     )
 
 
+def render_org_management_panel() -> None:
+    st.markdown("#### 单位管理码维护")
+    st.caption("推广版：新增医院科室或学院时，由总管理员在此生成绑定单位的管理码。单位管理员只能查看和导出本单位数据。")
+    records = load_org_access_records()
+    with st.expander("新增单位并生成管理码", expanded=False):
+        with st.form("create_org_code_form", clear_on_submit=False):
+            org_type_label = st.selectbox("单位类型", ["学院", "临床"], index=0)
+            org_type = "academy" if org_type_label == "学院" else "clinical"
+            c1, c2 = st.columns(2)
+            if org_type == "academy":
+                school_name = c1.text_input("院校全称", placeholder="例如：××职业技术学院")
+                department_name = c2.text_input("院系/专业", value="护理学院", placeholder="例如：护理学院/护理系")
+                hospital_name = ""
+            else:
+                hospital_name = c1.text_input("医院全称", value=DEFAULT_INSTITUTION, placeholder="请填写医院全称")
+                department_name = c2.text_input("科室全称", placeholder="例如：儿童呼吸免疫科")
+                school_name = ""
+            c3, c4, c5 = st.columns(3)
+            org_abbr = c3.text_input("单位缩写", placeholder="如 HX2 / CDVC")
+            unit_abbr = c4.text_input("科室/院系缩写", value="NURS" if org_type == "academy" else "RESP")
+            admin_name = c5.text_input("管理者姓名/备注", placeholder="选填")
+            submitted = st.form_submit_button("生成单位管理码", type="primary", use_container_width=True)
+        if submitted:
+            missing = []
+            if org_type == "academy" and not school_name.strip():
+                missing.append("院校全称")
+            if org_type == "clinical" and (not hospital_name.strip() or not department_name.strip()):
+                missing.append("医院全称/科室全称")
+            if not org_abbr.strip():
+                missing.append("单位缩写")
+            if missing:
+                st.error("请先完整填写：" + "、".join(missing))
+            else:
+                code = generate_org_admin_code(org_type, org_abbr, unit_abbr)
+                org_id = f"{'ACD' if org_type == 'academy' else 'CLN'}_{uuid.uuid4().hex[:8].upper()}"
+                item = {
+                    "org_id": org_id,
+                    "org_type": org_type,
+                    "code_type": "academy_admin" if org_type == "academy" else "clinical_admin",
+                    "school_name": school_name.strip(),
+                    "hospital_name": hospital_name.strip(),
+                    "department_name": department_name.strip(),
+                    "admin_code_hash": _sha256_code(code),
+                    "code_prefix": "-".join(code.split("-")[:3]),
+                    "permissions": ["view", "export"],
+                    "status": "active",
+                    "admin_name": admin_name.strip(),
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                    "note": "generated_in_streamlit_admin",
+                }
+                records.append(item)
+                save_org_access_records(records)
+                st.session_state.admin_last_generated_code = code
+                st.success("已生成并保存单位管理码。请立即复制保存，系统只展示本次生成的明文码。")
+                st.code(code, language="text")
+    if st.session_state.get("admin_last_generated_code"):
+        st.info("最近一次生成的单位管理码：")
+        st.code(st.session_state.admin_last_generated_code, language="text")
+    if records:
+        preview = []
+        for item in records:
+            preview.append({
+                "org_id": item.get("org_id", ""),
+                "权限类型": item.get("code_type", ""),
+                "院校": item.get("school_name", ""),
+                "医院": item.get("hospital_name", ""),
+                "科室/院系": item.get("department_name", ""),
+                "码前缀": item.get("code_prefix", ""),
+                "状态": item.get("status", ""),
+                "创建时间": item.get("created_at", ""),
+                "备注": item.get("admin_name", ""),
+            })
+        st.dataframe(preview, use_container_width=True, hide_index=True)
+    else:
+        st.warning("尚未创建任何单位管理码。")
+
+
 def render_admin_page() -> None:
     compact_header()
-    st.markdown("### 管理员后台｜V1.2.11 研究采集修订版")
+    st.markdown("### 管理者后台｜V1.3.4 推广版权限管理版")
     admin_password = get_secret_value("ADMIN_PASSWORD", "admin2026")
     if not st.session_state.get("admin_unlocked", False):
-        st.caption("请输入管理员密码后查看和导出训练记录。")
-        pwd = st.text_input("管理员密码", type="password")
-        if st.button("进入管理员后台", type="primary"):
+        st.caption("请输入总管理员密码或单位管理码。总管理员可维护单位管理码；单位管理员只能查看和导出本单位数据。")
+        pwd = st.text_input("管理码/管理员密码", type="password")
+        if st.button("进入管理者后台", type="primary"):
             if pwd == admin_password:
                 st.session_state.admin_unlocked = True
+                st.session_state.admin_scope = {"code_type": "super_admin", "org_type": "all", "permissions": ["view", "export", "manage"]}
+                st.session_state.admin_scope_type = "super_admin"
                 st.rerun()
             else:
-                st.error("管理员密码不正确。")
+                scope = find_org_scope_by_code(pwd)
+                if scope:
+                    st.session_state.admin_unlocked = True
+                    st.session_state.admin_scope = scope
+                    st.session_state.admin_scope_type = str(scope.get("code_type", ""))
+                    st.rerun()
+                else:
+                    st.error("管理码无效或已停用。")
         return
+
+    scope = st.session_state.get("admin_scope") or {"code_type": "super_admin"}
+    st.success("当前权限：" + scope_label(scope))
+    if st.button("退出后台", use_container_width=False):
+        st.session_state.admin_unlocked = False
+        st.session_state.admin_scope = None
+        st.session_state.admin_scope_type = ""
+        st.rerun()
+
+    if str(scope.get("code_type", "")) == "super_admin":
+        render_org_management_panel()
+        st.divider()
 
     raw_db_rows, db_message = load_result_rows_database()
     local_full_reports = load_full_reports_local()
@@ -2462,9 +3520,38 @@ def render_admin_page() -> None:
     if local_summary_records and raw_db_rows:
         st.caption(f"本地备用摘要记录：{len(local_summary_records)} 条；当前后台优先显示云端数据库记录。")
 
-    filter_col1, filter_col2 = st.columns([1, 1], gap="large")
-    collection_filter = filter_col1.selectbox("采集模式筛选", ["全部"] + COLLECTION_MODE_OPTIONS, index=0)
-    phase_filter = filter_col2.selectbox("阶段筛选", ["全部"] + ASSESSMENT_PHASE_OPTIONS, index=0)
+    # First enforce unit-level scope. Ordinary unit admins never see full dataset.
+    summary_records = [r for r in summary_records if record_matches_scope(r, scope)]
+    action_detail_records = [r for r in action_detail_records if record_matches_scope(r, scope)]
+    raw_jsonl_records = [r for r in raw_jsonl_records if isinstance(r, dict) and raw_record_matches_scope(r, scope)]
+
+    filter_col1, filter_col2, filter_col3 = st.columns([1, 1, 1], gap="large")
+    if str(scope.get("code_type", "")) == "clinical_admin":
+        mode_options = ["临床模式"]
+    elif str(scope.get("code_type", "")) == "academy_admin":
+        mode_options = ["学院模式"]
+    else:
+        mode_options = ["全部", "临床模式", "学院模式"]
+    mode_filter = filter_col1.selectbox("系统模式筛选", mode_options, index=0)
+    collection_filter = filter_col2.selectbox("采集模式筛选", ["全部"] + COLLECTION_MODE_OPTIONS, index=0)
+    phase_filter = filter_col3.selectbox("阶段筛选", ["全部"] + ALL_ASSESSMENT_PHASE_OPTIONS, index=0)
+
+    extra_filters = {}
+    if str(scope.get("code_type", "")) == "super_admin":
+        st.caption("总管理员可查看全部数据，也可使用下方字段进行单位筛选。普通单位管理员进入后会自动锁定单位范围。")
+        u1, u2, u3 = st.columns([1, 1, 1], gap="large")
+        extra_filters["hospital"] = u1.text_input("医院全称筛选（选填）", value="")
+        extra_filters["department"] = u2.text_input("科室筛选（选填）", value="")
+        extra_filters["school"] = u3.text_input("院校全称筛选（选填）", value="")
+    else:
+        st.caption("当前单位管理员权限已自动限定数据范围，导出按钮仅导出本单位当前筛选结果。")
+
+    def keep_mode(record: Dict[str, Any]) -> bool:
+        if mode_filter == "全部":
+            return True
+        return str(record.get("system_mode_label", "")) == mode_filter or (
+            mode_filter == "临床模式" and str(record.get("system_mode", "")) in ("", "clinical")
+        ) or (mode_filter == "学院模式" and str(record.get("system_mode", "")) == "academy")
 
     def keep_collection(record: Dict[str, Any]) -> bool:
         return collection_filter == "全部" or str(record.get("collection_mode", "")) == collection_filter
@@ -2472,21 +3559,38 @@ def render_admin_page() -> None:
     def keep_phase(record: Dict[str, Any]) -> bool:
         return phase_filter == "全部" or str(record.get("assessment_phase", "")) == phase_filter
 
-    collection_summary_records = [r for r in summary_records if keep_collection(r)]
-    participant_analysis_records = build_participant_analysis_records(collection_summary_records)
-    quality_records = build_data_quality_records(collection_summary_records)
-    summary_records = [r for r in collection_summary_records if keep_phase(r)]
-    action_detail_records = [r for r in action_detail_records if keep_collection(r) and keep_phase(r)]
+    def keep_extra(record: Dict[str, Any]) -> bool:
+        hosp = str(extra_filters.get("hospital", "")).strip()
+        dept = str(extra_filters.get("department", "")).strip()
+        school = str(extra_filters.get("school", "")).strip()
+        if hosp and str(record.get("institution", "")) != hosp:
+            return False
+        if dept and str(record.get("department", "")) != dept:
+            return False
+        if school and str(record.get("school_name", "")) != school:
+            return False
+        return True
+
+    filtered_summary_records = [r for r in summary_records if keep_mode(r) and keep_collection(r) and keep_extra(r)]
+    participant_analysis_records = build_participant_analysis_records(filtered_summary_records)
+    quality_records = build_data_quality_records(filtered_summary_records)
+    summary_records = [r for r in filtered_summary_records if keep_phase(r)]
+    action_detail_records = [r for r in action_detail_records if keep_mode(r) and keep_collection(r) and keep_phase(r) and keep_extra(r)]
 
     def keep_raw_record(record: Dict[str, Any]) -> bool:
         if "session" in record and isinstance(record.get("session"), dict):
             session = record.get("session", {}) or {}
             wrapped = {
+                "system_mode": session.get("system_mode", ""),
+                "system_mode_label": session.get("system_mode_label", ""),
                 "collection_mode": session.get("collection_mode", ""),
                 "assessment_phase": session.get("assessment_phase", ""),
+                "institution": session.get("institution", ""),
+                "department": session.get("department", ""),
+                "school_name": session.get("school_name", ""),
             }
-            return keep_collection(wrapped) and keep_phase(wrapped)
-        return keep_collection(record) and keep_phase(record)
+            return keep_mode(wrapped) and keep_collection(wrapped) and keep_phase(wrapped) and keep_extra(wrapped)
+        return keep_mode(record) and keep_collection(record) and keep_phase(record) and keep_extra(record)
 
     raw_jsonl_records = [r for r in raw_jsonl_records if isinstance(r, dict) and keep_raw_record(r)]
 
@@ -2511,59 +3615,19 @@ def render_admin_page() -> None:
         c4.metric("肾上腺素剂量错误", "-")
 
     st.markdown("#### 数据导出")
-    st.caption("一人一行CSV适合论文前后测统计；汇总CSV适合每次训练分析；质控CSV用于发现缺阶段、重复阶段、异常时长和主动结束记录。")
+    st.caption("导出仅基于当前权限和当前筛选结果；单位管理员不会导出其他医院/学校数据。")
 
+    safe_scope = safe_filename_part(scope_label(scope).replace("｜", "_"))
     d1, d2, d3, d4, d5 = st.columns(5)
     now = datetime.now().strftime("%Y%m%d_%H%M%S")
-    d1.download_button(
-        "一人一行 CSV",
-        data=records_to_csv_bytes(participant_analysis_records),
-        file_name=f"peds_sim_participant_paired_{storage_label}_{now}.csv",
-        mime="text/csv",
-        use_container_width=True,
-        disabled=not participant_analysis_records,
-    )
-    d2.download_button(
-        "汇总 CSV",
-        data=records_to_csv_bytes(summary_records),
-        file_name=f"peds_sim_summary_{storage_label}_{now}.csv",
-        mime="text/csv",
-        use_container_width=True,
-        disabled=not summary_records,
-    )
-    d3.download_button(
-        "质控提示 CSV",
-        data=records_to_csv_bytes(quality_records),
-        file_name=f"peds_sim_quality_checks_{storage_label}_{now}.csv",
-        mime="text/csv",
-        use_container_width=True,
-        disabled=not quality_records,
-    )
-    d4.download_button(
-        "操作明细 CSV",
-        data=records_to_csv_bytes(action_detail_records),
-        file_name=f"peds_sim_action_details_{storage_label}_{now}.csv",
-        mime="text/csv",
-        use_container_width=True,
-        disabled=not action_detail_records,
-    )
-    d5.download_button(
-        "完整 JSONL",
-        data=records_to_jsonl_bytes(raw_jsonl_records),
-        file_name=f"peds_sim_full_reports_{storage_label}_{now}.jsonl",
-        mime="application/json",
-        use_container_width=True,
-        disabled=not raw_jsonl_records,
-    )
+    d1.download_button("一人一行 CSV", data=records_to_csv_bytes(participant_analysis_records), file_name=f"peds_sim_participant_paired_{safe_scope}_{storage_label}_{now}.csv", mime="text/csv", use_container_width=True, disabled=not participant_analysis_records)
+    d2.download_button("汇总 CSV", data=records_to_csv_bytes(summary_records), file_name=f"peds_sim_summary_{safe_scope}_{storage_label}_{now}.csv", mime="text/csv", use_container_width=True, disabled=not summary_records)
+    d3.download_button("质控提示 CSV", data=records_to_csv_bytes(quality_records), file_name=f"peds_sim_quality_checks_{safe_scope}_{storage_label}_{now}.csv", mime="text/csv", use_container_width=True, disabled=not quality_records)
+    d4.download_button("操作明细 CSV", data=records_to_csv_bytes(action_detail_records), file_name=f"peds_sim_action_details_{safe_scope}_{storage_label}_{now}.csv", mime="text/csv", use_container_width=True, disabled=not action_detail_records)
+    d5.download_button("完整 JSONL", data=records_to_jsonl_bytes(raw_jsonl_records), file_name=f"peds_sim_full_reports_{safe_scope}_{storage_label}_{now}.jsonl", mime="application/json", use_container_width=True, disabled=not raw_jsonl_records)
 
     st.divider()
-    view = st.radio(
-        "查看数据表",
-        ["一人一行", "训练汇总", "质控提示", "操作明细"],
-        index=["一人一行", "训练汇总", "质控提示", "操作明细"].index(st.session_state.get("admin_export_view", "一人一行"))
-        if st.session_state.get("admin_export_view", "一人一行") in ["一人一行", "训练汇总", "质控提示", "操作明细"] else 0,
-        horizontal=True,
-    )
+    view = st.radio("查看数据表", ["一人一行", "训练汇总", "质控提示", "操作明细"], index=["一人一行", "训练汇总", "质控提示", "操作明细"].index(st.session_state.get("admin_export_view", "一人一行")) if st.session_state.get("admin_export_view", "一人一行") in ["一人一行", "训练汇总", "质控提示", "操作明细"] else 0, horizontal=True)
     st.session_state.admin_export_view = view
 
     if view == "一人一行":
@@ -2592,15 +3656,13 @@ def render_admin_page() -> None:
             st.warning("尚未产生可展开的操作明细。旧版本仅保存摘要时，可能无法展开。")
 
     with st.expander("字段说明", expanded=False):
-        st.markdown(
-            """
-            - **一人一行 CSV**：按参与者编号和采集模式自动配对基线、训练、后测，直接包含前后测分差和肾上腺素时间变化。
-            - **汇总 CSV**：每次训练一行，已将关键步骤时间点、有效完成时间、肾上腺素剂量状态、错误操作次数、最终生命体征等展开为单独字段。
-            - **质控提示 CSV**：列出缺少阶段、重复阶段、异常短时长、主动确认完成和现场备注，便于正式纳入前清洗数据。
-            - **操作明细 CSV**：每个操作事件一行，包含操作时间、操作名称、加分、扣分、剂量、结果等，适合分析操作顺序和延迟。
-            - **完整 JSONL**：一行是一份完整训练报告，保留嵌套结构，适合长期归档和后续深度分析。
-            """
-        )
+        st.markdown("""
+        - **一人一行 CSV**：按参与者编号和采集模式自动配对课前/训练/课后或基线/培训/后测，包含前后测分差、SUS和教学体验字段。
+        - **汇总 CSV**：每次训练一行，展开关键时间点、剂量状态、错误操作次数、最终生命体征等。
+        - **质控提示 CSV**：列出缺少阶段、重复阶段、异常短时长、主动确认完成和现场备注。
+        - **操作明细 CSV**：每个操作事件一行，适合分析操作顺序和延迟。
+        - **完整 JSONL**：保留完整训练报告和问卷嵌套结构，适合长期归档。
+        """)
 
 
 def render_epinephrine_dose_panel(sim: Simulator) -> bool:
@@ -2768,7 +3830,7 @@ def render_prior_experience_survey() -> None:
             if st.session_state.get("prior_simulation_experience", "") in yn_options else 0,
         )
         real_case = c3.selectbox(
-            "是否处理过真实过敏反应病例（必填）",
+            "是否真实参与或见习过过敏反应相关处置（必填）",
             yn_options,
             index=yn_options.index(st.session_state.get("real_case_experience", ""))
             if st.session_state.get("real_case_experience", "") in yn_options else 0,
@@ -2782,7 +3844,7 @@ def render_prior_experience_survey() -> None:
         if not prior_sim:
             missing.append("是否参加过模拟/虚拟仿真培训")
         if not real_case:
-            missing.append("是否处理过真实病例")
+            missing.append("是否参与或见习过真实病例")
         if missing:
             st.error("请先完整填写：" + "、".join(missing))
             return
@@ -2846,6 +3908,9 @@ def render_simulation() -> None:
     if st.session_state.get("pending_prior_experience_survey", False):
         render_prior_experience_survey()
         return
+    if st.session_state.get("pending_academy_post_evaluation", False):
+        render_academy_post_evaluation_survey()
+        return
     if st.session_state.ended:
         render_report()
         return
@@ -2906,7 +3971,7 @@ def render_simulation() -> None:
             for idx in range(0, len(actions), option_cols):
                 row = st.columns(option_cols, gap="medium")
                 for local_index, (col, action) in enumerate(zip(row, actions[idx: idx + option_cols])):
-                    full_label = action.get("label", action.get("id", ""))
+                    full_label = display_action_label(action, sim)
                     short_label = compact_action_label(full_label, max_chars=18)
                     aid = action.get("id")
                     button_text = f"{idx + local_index + 1}. {short_label}"
@@ -3056,6 +4121,10 @@ def main() -> None:
     inject_compact_css()
     init_session()
     if not require_app_access():
+        return
+    if not render_system_mode_selection_page():
+        return
+    if not render_academy_scenario_selection_page():
         return
     render_sidebar()
     if st.session_state.page == "管理员后台":

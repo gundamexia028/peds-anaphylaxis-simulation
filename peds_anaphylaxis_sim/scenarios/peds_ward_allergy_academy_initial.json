@@ -1,0 +1,754 @@
+{
+  "schema_version": 1,
+  "scenario": {
+    "id": "peds_ward_allergy_academy_initial",
+    "title": "儿科严重过敏反应/过敏性休克抢救虚拟仿真｜学院基础版",
+    "language": "zh-CN",
+    "version": "V1.3.5-academy-branching-enhanced",
+    "source_note": "V1.3.5在V1.3.4推广版权限与学院流程基础上叠加增强：学院病例脚本、护生身份边界、教学性错误分支、风险标签与100分分项评分；临床模式不改动。",
+    "mode_defaults": {
+      "coach": true,
+      "tick_seconds": 30
+    },
+    "script_role": "academy_initial",
+    "script_name": "academy_initial",
+    "display_name": "学院基础版（护生抢救配合能力评估）",
+    "scoring_basis": "100-point academy anaphylaxis rescue teaching scoring: identification, initial rescue activation, airway/breathing/circulation support, epinephrine/rescue cooperation, reassessment and communication.",
+    "scoring_model": "学院模式护生能力评价：不考独立抢救，重点评价异常识别、暂停可疑输入与保留通路、及时呼救、ABC支持与循环监测、肾上腺素认知和抢救配合、病情复评、家属安抚与SBAR汇报。",
+    "target_group": "nursing_student",
+    "academy_scenario_id": "academy_anaphylaxis_rescue",
+    "academy_scenario_name": "严重过敏反应/过敏性休克抢救",
+    "academy_scenario_category": "急救护理",
+    "academy_course_type": "基础护理/急救护理/儿科护理",
+    "academy_difficulty": "基础版",
+    "version_line": "main_system_version_V1.3.5_continuing_from_V1.3.4",
+    "case_design_principle": "same_medical_core_as_clinical_mode_but_reduced_role_tasks_for_nursing_students_neutral_exam_labels_teaching_error_branches_role_boundary_scoring"
+  },
+  "patient": {
+    "age_years": 5,
+    "weight_kg": 18,
+    "setting": "儿科普通病房/护理实训室：5岁患儿静脉输注抗菌药物约5分钟后出现瘙痒、皮疹、咳嗽、喘息和循环异常。",
+    "trigger": "静脉输注某抗菌药物约5分钟后出现疑似严重过敏反应。",
+    "sex": "男",
+    "virtual_name": "小宇",
+    "diagnosis": "支气管肺炎",
+    "fixed_profile": true,
+    "randomized_profile": false,
+    "randomization_rule": "fixed academy teaching case profile"
+  },
+  "diagnosis_criteria": {
+    "criterion_1": "皮肤/黏膜症状 +（呼吸道症状 或 血压下降/器官功能不全 或 严重胃肠道症状）",
+    "criterion_2": "暴露已知或可疑变应原后数分钟至数小时内出现：血压降低 或 支气管痉挛 或 喉部症状；可无典型皮肤黏膜症状",
+    "hypotension_definition": {
+      "infant_1m_to_1y_sbp_lt": 70,
+      "age_1_to_10_sbp_lt_formula": "70 + 2*age_years",
+      "age_11_to_17_sbp_lt": 90,
+      "or_drop_from_baseline_pct": 30
+    }
+  },
+  "grading": {
+    "I": "皮肤/黏膜为主，生命体征稳定；无明显呼吸/循环受累",
+    "II": "出现明显呼吸受累（喘鸣/喉鸣/SpO2下降等）和/或血压下降（早期）",
+    "III": "重度呼吸受累或循环衰竭（严重低氧/明显低血压/意识改变等）",
+    "IV": "心跳或呼吸骤停"
+  },
+  "baseline": {
+    "time_zero_description": "你是一名在校护生，正在儿科普通病房进行情景学习。5岁男童小宇因支气管肺炎住院，静脉输注某抗菌药物约5分钟后突然说“身上痒”，随后出现面部潮红、躯干散在风团样皮疹，伴咳嗽、喘息和烦躁。家属紧张询问：“孩子是不是药物过敏？”请在护生身份边界内完成识别、呼救、初步处置与抢救配合。",
+    "vitals": {
+      "SpO2": 93,
+      "HR": 128,
+      "RR": 32,
+      "SBP": 86,
+      "DBP": 52,
+      "Temp": 36.8
+    },
+    "symptoms": {
+      "rash": 1,
+      "angioedema": 0,
+      "wheeze": 1,
+      "stridor": 0,
+      "gi": 0,
+      "consciousness": 1
+    },
+    "flags": {
+      "infusion_running": true,
+      "stopped_infusion": false,
+      "help_called": false,
+      "oxygen_on": false,
+      "positioned": false,
+      "monitor_on": false,
+      "bp_checked": false,
+      "iv_confirmed": true,
+      "epi_im_given": false,
+      "epi_im_doses": 0,
+      "fluid_bolus_given": false,
+      "bronchodilator_neb": false,
+      "nebulized_epi": false,
+      "reassess_count": 0,
+      "family_communication": false,
+      "sbar_handoff": false,
+      "dangerous_output_event": 0,
+      "epi_effect_ticks": 0,
+      "fluid_effect_ticks": 0,
+      "neb_epi_effect_ticks": 0,
+      "bronchodilator_effect_ticks": 0,
+      "iv_access": true,
+      "bp_ordered": false,
+      "airway_compromise": false,
+      "epi_dose_checked": false,
+      "epi_underdose_event": false,
+      "epi_overdose_event": false,
+      "tachycardia_heart_failure": false,
+      "epi_im_attempts": 0,
+      "epi_last_dose_mg": 0.0,
+      "epi_target_dose_mg": 0.0,
+      "dead": false,
+      "rescue_access_preserved": true,
+      "fluid_bolus_volume_ml": 0.0,
+      "fluid_min_ml": 0.0,
+      "fluid_max_ml": 0.0,
+      "fluid_bolus_valid": false,
+      "fluid_bolus_under": false,
+      "fluid_bolus_over": false,
+      "fluid_without_epi": false,
+      "first_reassessment_done": false,
+      "second_reassessment_done": false,
+      "premature_first_reassessment": false,
+      "premature_second_reassessment": false,
+      "late_second_reassessment": false,
+      "family_before_second_reassess": false,
+      "family_sbar_completed": false,
+      "repeat_epi_indicated": false,
+      "repeat_epi_given": false,
+      "repeat_epi_not_indicated": false,
+      "repeat_epi_premature": false,
+      "advanced_support_contacted": false,
+      "advanced_support_indicated": false,
+      "cpr_done": false,
+      "cpr_indicated": false,
+      "epi_dose_high_event": false,
+      "serious_medication_error": false,
+      "nebulized_epi_not_indicated": false,
+      "bronchospasm_residual": true,
+      "initial_circulation_support_complete": false,
+      "operation_count": 0,
+      "pre_epi_core_steps_completed": 0,
+      "epinephrine_delay_after_core_steps": false,
+      "adrenaline_delay_event": false,
+      "severe_deterioration_triggered": false,
+      "airway_risk_increasing": false,
+      "shock_risk_increasing": false,
+      "airway_obstruction_triggered": false,
+      "bvm_required": false,
+      "bvm_done": false,
+      "bvm_not_indicated": false,
+      "bvm_effect_ticks": 0,
+      "steroid_given": false,
+      "steroid_valid": false,
+      "steroid_timing_valid": false,
+      "steroid_without_epi": false,
+      "steroid_before_fluid": false,
+      "steroid_dose_checked": false,
+      "steroid_dose_mg": 0.0,
+      "steroid_min_mg": 0.0,
+      "steroid_max_mg": 0.0,
+      "steroid_under": false,
+      "steroid_over": false,
+      "steroid_effect_ticks": 0,
+      "cardiac_arrest": false,
+      "cpr_required": false,
+      "resuscitation_required": false,
+      "resuscitation_in_progress": false,
+      "resuscitation_initiated_correctly": false,
+      "resuscitation_rosc": false,
+      "resuscitation_rosc_time_sec": null,
+      "cardiac_arrest_time_sec": null,
+      "post_arrest_care_required": false,
+      "allergy_identified": false,
+      "rescue_equipment_prepared": false,
+      "academy_reassessment_done": false,
+      "academy_family_communication": false,
+      "academy_sbar_done": false,
+      "academy_completed": false,
+      "epinephrine_rescue_prepared": false
+    }
+  },
+  "thresholds": {
+    "SpO2_low": 94,
+    "SpO2_critical": 90,
+    "SpO2_arrest": 70,
+    "hypotension_sbp_drop_pct": 30,
+    "grade_III_sbp_lt_age_threshold": true
+  },
+  "actions": [
+    {
+      "id": "allergy_identification",
+      "label": "识别可能为药物相关严重过敏反应危险信号",
+      "category": "critical_identification",
+      "score": {
+        "points": 15,
+        "time_window_seconds": 120
+      },
+      "risk_tags_when_missing": [
+        "延迟识别",
+        "低估病情"
+      ],
+      "effects": {
+        "set_flags": {
+          "allergy_identified": true
+        }
+      }
+    },
+    {
+      "id": "stop_infusion",
+      "label": "暂停当前可疑药物/液体，保留静脉通道",
+      "category": "critical_initial_response",
+      "score": {
+        "points": 10,
+        "time_window_seconds": 120
+      },
+      "risk_tags_when_missing": [
+        "延迟去除可疑诱因"
+      ],
+      "effects": {
+        "set_flags": {
+          "stopped_infusion": true,
+          "infusion_running": false,
+          "rescue_access_preserved": true,
+          "iv_access": true
+        }
+      }
+    },
+    {
+      "id": "call_help",
+      "label": "立即呼叫带教老师、上级护士和医生",
+      "category": "critical_initial_response",
+      "score": {
+        "points": 10,
+        "time_window_seconds": 120
+      },
+      "risk_tags_when_missing": [
+        "延迟启动抢救"
+      ],
+      "effects": {
+        "set_flags": {
+          "help_called": true
+        }
+      }
+    },
+    {
+      "id": "high_flow_oxygen",
+      "label": "协助体位管理并给予基础氧疗/保持气道通畅",
+      "category": "critical_abc_support",
+      "score": {
+        "points": 8,
+        "time_window_seconds": 180
+      },
+      "risk_tags_when_missing": [
+        "氧疗支持不足"
+      ],
+      "effects": {
+        "set_flags": {
+          "oxygen_on": true,
+          "positioned": true
+        },
+        "delta_vitals": {
+          "SpO2": 2,
+          "RR": -1
+        }
+      }
+    },
+    {
+      "id": "connect_monitor",
+      "label": "连接监护，观察意识、呼吸和皮肤颜色变化",
+      "category": "critical_abc_support",
+      "score": {
+        "points": 8,
+        "time_window_seconds": 180
+      },
+      "risk_tags_when_missing": [
+        "病情观察不足"
+      ],
+      "effects": {
+        "set_flags": {
+          "monitor_on": true
+        }
+      }
+    },
+    {
+      "id": "check_bp",
+      "label": "测量血压并评估循环状态",
+      "category": "critical_abc_support",
+      "score": {
+        "points": 9,
+        "time_window_seconds": 180
+      },
+      "risk_tags_when_missing": [
+        "循环监测不足"
+      ],
+      "effects": {
+        "set_flags": {
+          "bp_ordered": true,
+          "bp_checked": true
+        }
+      }
+    },
+    {
+      "id": "prepare_rescue_equipment",
+      "label": "准备抢救车、肾上腺素注射液、注射器、晶体液和氧疗物品，并配合老师/医生核对体重、药名、剂量和给药途径",
+      "category": "critical_rescue_cooperation",
+      "score": {
+        "points": 15,
+        "time_window_seconds": 240
+      },
+      "risk_tags_when_missing": [
+        "急救药物优先级错误",
+        "抢救配合不足"
+      ],
+      "effects": {
+        "set_flags": {
+          "rescue_equipment_prepared": true,
+          "epinephrine_rescue_prepared": true,
+          "drug_check_cooperation": true
+        }
+      }
+    },
+    {
+      "id": "academy_reassess",
+      "label": "复测生命体征并复评皮疹、呼吸、意识和循环变化",
+      "category": "critical_reassessment",
+      "score": {
+        "points": 10,
+        "time_window_seconds": 300
+      },
+      "risk_tags_when_missing": [
+        "病情复评不足"
+      ],
+      "effects": {
+        "set_flags": {
+          "academy_reassessment_done": true
+        },
+        "counter_inc": {
+          "reassess_count": 1
+        }
+      }
+    },
+    {
+      "id": "academy_family_communication",
+      "label": "在不离开床旁配合的前提下简要安抚家属",
+      "category": "critical_communication",
+      "score": {
+        "points": 5,
+        "time_window_seconds": 360
+      },
+      "risk_tags_when_missing": [
+        "沟通安抚不足"
+      ],
+      "effects": {
+        "set_flags": {
+          "academy_family_communication": true,
+          "family_communication": true
+        }
+      }
+    },
+    {
+      "id": "academy_sbar_handoff",
+      "label": "用简化SBAR向老师/医生汇报病情、背景、评估和建议",
+      "category": "critical_communication",
+      "score": {
+        "points": 10,
+        "time_window_seconds": 420
+      },
+      "risk_tags_when_missing": [
+        "汇报信息不完整"
+      ],
+      "effects": {
+        "set_flags": {
+          "academy_sbar_done": true,
+          "sbar_handoff": true,
+          "academy_completed": true
+        }
+      }
+    },
+    {
+      "id": "continue_infusion",
+      "label": "继续观察，暂不改变当前输入",
+      "category": "unsafe_delay",
+      "score": {
+        "points": 0
+      },
+      "risk_tags": [
+        "延迟去除可疑诱因",
+        "低估病情"
+      ],
+      "effects": {
+        "counter_inc": {
+          "dangerous_output_event": 1
+        },
+        "delta_symptoms": {
+          "wheeze": 1,
+          "rash": 1
+        },
+        "delta_vitals": {
+          "SpO2": -3,
+          "HR": 8,
+          "SBP": -8
+        }
+      }
+    },
+    {
+      "id": "remove_iv",
+      "label": "直接拔除静脉通路",
+      "category": "unsafe_access",
+      "score": {
+        "points": 0
+      },
+      "risk_tags": [
+        "静脉通道丢失"
+      ],
+      "effects": {
+        "set_flags": {
+          "iv_access": false,
+          "iv_removed": true,
+          "rescue_access_preserved": false
+        },
+        "counter_inc": {
+          "dangerous_output_event": 1
+        }
+      }
+    },
+    {
+      "id": "ask_family_first",
+      "label": "先详细询问家属既往过敏史，暂不处理床旁变化",
+      "category": "unsafe_delay",
+      "score": {
+        "points": 0
+      },
+      "risk_tags": [
+        "处置延迟",
+        "判断偏离重点"
+      ],
+      "effects": {
+        "counter_inc": {
+          "dangerous_output_event": 1
+        },
+        "delta_vitals": {
+          "SpO2": -1,
+          "HR": 3,
+          "SBP": -3
+        }
+      }
+    },
+    {
+      "id": "send_family_for_help",
+      "label": "让家属去护士站找老师或医生",
+      "category": "unsafe_call_help",
+      "score": {
+        "points": 0
+      },
+      "risk_tags": [
+        "呼救方式不当",
+        "延迟启动抢救"
+      ],
+      "effects": {
+        "counter_inc": {
+          "dangerous_output_event": 1
+        },
+        "delta_vitals": {
+          "SpO2": -2,
+          "HR": 5,
+          "SBP": -4
+        }
+      }
+    },
+    {
+      "id": "prepare_steroid_antihistamine_only",
+      "label": "只优先准备糖皮质激素或抗组胺药",
+      "category": "unsafe_drug_priority",
+      "score": {
+        "points": 0
+      },
+      "risk_tags": [
+        "急救药物优先级错误",
+        "误认为二线药物可替代一线急救药物"
+      ],
+      "effects": {
+        "counter_inc": {
+          "dangerous_output_event": 1
+        },
+        "delta_vitals": {
+          "SpO2": -2,
+          "HR": 4,
+          "SBP": -4
+        }
+      }
+    },
+    {
+      "id": "student_independent_epinephrine",
+      "label": "护生自行抽取并独立注射急救药物",
+      "category": "unsafe_role_boundary",
+      "score": {
+        "points": 0
+      },
+      "risk_tags": [
+        "护生身份边界风险",
+        "用药安全风险"
+      ],
+      "effects": {
+        "counter_inc": {
+          "dangerous_output_event": 1
+        },
+        "set_flags": {
+          "student_role_boundary_risk": true
+        }
+      }
+    },
+    {
+      "id": "watch_only",
+      "label": "只在旁边观看，等待老师处理",
+      "category": "unsafe_passive",
+      "score": {
+        "points": 0
+      },
+      "risk_tags": [
+        "抢救配合不足",
+        "延迟启动抢救"
+      ],
+      "effects": {
+        "counter_inc": {
+          "dangerous_output_event": 1
+        },
+        "delta_vitals": {
+          "SpO2": -2,
+          "HR": 5,
+          "SBP": -4
+        }
+      }
+    }
+  ],
+  "dynamics": {
+    "tick_seconds": 30,
+    "rules": [
+      {
+        "name": "ongoing_exposure_worsens_academy",
+        "when": "flags.infusion_running and t >= 30",
+        "effects": {
+          "delta_symptoms": {
+            "rash": 1,
+            "wheeze": 1
+          },
+          "delta_vitals": {
+            "SpO2": -3,
+            "HR": 8,
+            "SBP": -6,
+            "RR": 2
+          }
+        }
+      },
+      {
+        "name": "basic_support_stabilizes_academy",
+        "when": "flags.stopped_infusion and flags.help_called and flags.oxygen_on and t >= 60 and (t % 60 == 0)",
+        "effects": {
+          "delta_symptoms": {
+            "wheeze": -1
+          },
+          "delta_vitals": {
+            "SpO2": 2,
+            "HR": -3,
+            "SBP": 2,
+            "RR": -1
+          }
+        }
+      },
+      {
+        "name": "unaddressed_risk_progresses_academy",
+        "when": "(not flags.stopped_infusion or not flags.help_called) and t >= 180 and (t % 90 == 0)",
+        "effects": {
+          "delta_symptoms": {
+            "wheeze": 1,
+            "consciousness": 1
+          },
+          "delta_vitals": {
+            "SpO2": -4,
+            "HR": 10,
+            "SBP": -8,
+            "RR": 3
+          }
+        }
+      }
+    ]
+  },
+  "end_conditions": {
+    "success_when": "flags.academy_completed and flags.academy_reassessment_done",
+    "failure_when": "flags.dead or vitals.SpO2 <= 80 or vitals.SBP < age_sbp_threshold",
+    "max_time_seconds": 900
+  },
+  "reporting": {
+    "observe_recommendation": {
+      "label": "教师预试运行提示",
+      "text": "本版本为学院教师封闭式预试运行版，重点用于评估护生教学适配性、内容准确性、身份边界和系统可用性；不建议直接作为正式学生研究采集数据。"
+    },
+    "issue_profile": "academy_anaphylaxis_rescue"
+  },
+  "training": {
+    "min_time_seconds_for_success": 0,
+    "min_reassess_count_recommended": 1,
+    "show_feedback_after_each_choice": true,
+    "record_first_choice": true,
+    "record_final_choice": true,
+    "guided_prompts": [
+      {
+        "text": "步骤1：先判断当前异常情况是否提示严重过敏反应风险。",
+        "reason": "护生教学重点是早期识别危险信号。",
+        "done_when": "flags.allergy_identified"
+      },
+      {
+        "text": "步骤2：暂停当前可疑输入，同时保留静脉通道。",
+        "reason": "减少持续暴露，同时保证后续抢救用药和补液通道。",
+        "done_when": "flags.stopped_infusion and flags.iv_access"
+      },
+      {
+        "text": "步骤3：立即呼叫带教老师、上级护士和医生。",
+        "reason": "护生不独立承担抢救决策，应快速进入团队协作。",
+        "done_when": "flags.help_called"
+      },
+      {
+        "text": "步骤4：在老师到达前后完成基础氧疗、监测和循环评估配合。",
+        "reason": "严重过敏反应可累及气道、呼吸和循环。",
+        "done_when": "flags.oxygen_on and flags.monitor_on and flags.bp_checked"
+      },
+      {
+        "text": "步骤5：准备抢救车、肾上腺素、注射器、晶体液和氧疗物品，并配合核对。",
+        "reason": "肾上腺素是一线急救药物，但护生应在老师/医生指导下配合核对，不独立给药。",
+        "done_when": "flags.rescue_equipment_prepared"
+      },
+      {
+        "text": "步骤6：初步处理后复评生命体征和症状变化。",
+        "reason": "不能只关注皮疹，还要复评呼吸、循环、意识和血氧。",
+        "done_when": "flags.academy_reassessment_done"
+      },
+      {
+        "text": "步骤7：完成家属安抚和简化SBAR汇报。",
+        "reason": "汇报应包含现状、背景、评估和建议。",
+        "done_when": "flags.academy_family_communication and flags.academy_sbar_done"
+      }
+    ]
+  },
+  "scoring_notes": {
+    "profile": "学院护生抢救配合能力评分",
+    "total_score": "100分",
+    "principle": "医学内核与临床模式一致，但角色任务降阶为护生能力；正确关键动作加分，错误动作记录风险标签和病情演化，不以倒扣为主。"
+  },
+  "version_notes": {
+    "V1.2.6": "糖皮质激素计分版：总分25分；删除抗组胺药；新增糖皮质激素剂量输入；未及时肌注肾上腺素改为第8关键节点后加速恶化；新增气道梗阻/球囊加压给氧条件性分支。",
+    "V1.2.6b": "去除考试模式CPR/高级支持提示性文字；CPR+球囊面罩加压给氧+联系高级生命支持后，作为危重抢救后转入PICU终点。",
+    "V1.2.6g": "普通考核结束后未完成项目按0分处理，不能继续补做；错误操作与危重事件仍作为安全指标或结局指标记录。"
+  },
+  "version_history": {
+    "V1.2.6c": "去除“CPR操作提示/CPR状态提示/胸外按压操作提示”等提示性文本；当前症状栏改为随低氧、低血压、气道梗阻和意识状态动态进展。",
+    "V1.2.6d": "心肺骤停后下一步若未选择CPR，或继续让时间流逝而未CPR，系统记录死亡事件并终止情景。",
+    "V1.2.6f": "高级生命支持指征分为当前仍适用与历史曾触发；最终安全缺陷只依据当前仍适用状态，同时记录触发时间与原因。",
+    "V1.2.6g": "标准流程按顺序满分；延迟完成给一半分向下取整；未完成不扣主分；普通考核以两次复评、家属沟通和SBAR交接为终止条件。"
+  },
+  "change_log": {
+    "V1.2.7": "模块边界评分版：普通路径总分100分；抢救启动和初始支持按模块评分；首次有效肌注肾上腺素为核心分界点；肾上腺素后按标准处理模块评分；再次肌注仅异常分支触发；基线后补充问卷由前端采集。",
+    "V1.3.5": "基于V1.3.4主线叠加学院病例脚本与分支逻辑增强：固定初始/变体病例，100分分项评分调整为15/20/25/15/10/15，新增护生身份边界、二线药物优先级错误、呼救方式不当、旁观等待等教学性错误分支和风险标签。"
+  },
+  "scoring_policy": {
+    "V1.2.7": "前期模块允许并行但有时间/阶段边界；肌注肾上腺素后进入顺序评分；越过模块边界的补做不再补分或仅给延迟半分。"
+  },
+  "module_scoring": {
+    "academy_module1_identification": {
+      "name": "严重过敏反应识别",
+      "max_points": 15,
+      "actions": [
+        "allergy_identification"
+      ],
+      "boundary": "识别皮肤/呼吸/循环危险信号，判断可能为药物相关严重过敏反应。"
+    },
+    "academy_module2_call_help_initial_handling": {
+      "name": "抢救启动与呼救",
+      "max_points": 20,
+      "actions": [
+        "stop_infusion",
+        "call_help"
+      ],
+      "boundary": "暂停可疑输入、保留静脉通道并及时呼叫老师/上级护士/医生。"
+    },
+    "academy_module3_abc_monitoring": {
+      "name": "ABC支持与循环监测",
+      "max_points": 25,
+      "actions": [
+        "high_flow_oxygen",
+        "connect_monitor",
+        "check_bp"
+      ],
+      "boundary": "完成基础体位/氧疗、监测和血压/循环评估。"
+    },
+    "academy_module4_epinephrine_rescue_cooperation": {
+      "name": "肾上腺素认知与抢救配合",
+      "max_points": 15,
+      "actions": [
+        "prepare_rescue_equipment"
+      ],
+      "boundary": "知道肾上腺素是一线急救药物，准备抢救物品并配合老师/医生核对，不独立给药。"
+    },
+    "academy_module5_reassessment": {
+      "name": "病情复评",
+      "max_points": 10,
+      "actions": [
+        "academy_reassess"
+      ],
+      "boundary": "复测生命体征并复评皮疹、呼吸、意识和循环变化。"
+    },
+    "academy_module6_communication_sbar": {
+      "name": "沟通与SBAR汇报",
+      "max_points": 15,
+      "actions": [
+        "academy_family_communication",
+        "academy_sbar_handoff"
+      ],
+      "boundary": "完成家属安抚和简化SBAR汇报。"
+    }
+  },
+  "standard_flow_order": {
+    "allergy_identification": 1,
+    "stop_infusion": 2,
+    "call_help": 3,
+    "high_flow_oxygen": 4,
+    "connect_monitor": 5,
+    "check_bp": 6,
+    "prepare_rescue_equipment": 7,
+    "academy_reassess": 8,
+    "academy_family_communication": 9,
+    "academy_sbar_handoff": 10,
+    "continue_infusion": 91,
+    "remove_iv": 92,
+    "ask_family_first": 93,
+    "send_family_for_help": 94,
+    "prepare_steroid_antihistamine_only": 95,
+    "student_independent_epinephrine": 96,
+    "watch_only": 97
+  },
+  "risk_tag_dictionary": {
+    "延迟识别": "未能及时识别严重过敏反应危险信号",
+    "低估病情": "将危急症状误判为轻微不适或情绪反应",
+    "判断偏离重点": "关注非核心问题，未优先识别过敏反应",
+    "延迟去除可疑诱因": "未及时暂停可疑药物或液体",
+    "静脉通道丢失": "错误拔除静脉通道，影响后续抢救",
+    "处置延迟": "未优先采取关键初步处理",
+    "延迟启动抢救": "未及时呼叫老师、上级护士或医生",
+    "呼救方式不当": "呼救方式不直接或不符合抢救场景要求",
+    "氧疗支持不足": "未及时给予或准备氧疗支持",
+    "病情观察不足": "未观察意识、呼吸、皮肤颜色等变化",
+    "循环监测不足": "未及时监测血压、脉搏、血氧等指标",
+    "急救药物优先级错误": "未识别肾上腺素在严重过敏反应中的一线地位",
+    "误认为二线药物可替代一线急救药物": "将糖皮质激素或抗组胺药作为主要急救药物",
+    "护生身份边界风险": "护生越权独立实施急救用药",
+    "用药安全风险": "未在老师或医生指导下完成核对与用药配合",
+    "抢救配合不足": "未能主动参与符合身份边界的抢救配合",
+    "病情复评不足": "未系统复评生命体征和症状变化",
+    "沟通安抚不足": "未进行符合情境的基础家属安抚",
+    "汇报信息不完整": "SBAR汇报缺少关键信息"
+  }
+}

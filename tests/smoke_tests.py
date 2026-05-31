@@ -1,5 +1,36 @@
 from pathlib import Path
 import sys
+import types
+
+
+class DummySessionState(dict):
+    def __getattr__(self, key):
+        return self.get(key, "")
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+
+def _cache_passthrough(*args, **kwargs):
+    def wrapper(func):
+        return func
+    return wrapper
+
+
+class DummyStreamlit(types.SimpleNamespace):
+    def __getattr__(self, name):
+        def noop(*args, **kwargs):
+            return None
+        return noop
+
+
+if "streamlit" not in sys.modules:
+    sys.modules["streamlit"] = DummyStreamlit(
+        session_state=DummySessionState(),
+        secrets={},
+        cache_resource=_cache_passthrough,
+        cache_data=_cache_passthrough,
+    )
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,6 +187,53 @@ def test_participant_pair_export() -> None:
     assert not any(item["assessment_phase"] == "模拟培训" and item["quality_issue"] == "缺少该阶段记录" for item in quality)
 
 
+def test_academy_scenario_pair_export() -> None:
+    records = [
+        {
+            "system_mode": "academy",
+            "academy_scenario_id": "academy_anaphylaxis_rescue",
+            "academy_scenario_name": "严重过敏反应/过敏性休克抢救",
+            "participant_id": "ACAD001",
+            "collection_mode": "正式采集",
+            "collection_mode_code": "formal",
+            "assessment_phase": "课前测评",
+            "session_id": "pre_1",
+            "created_at": "2026-05-31T10:00:00",
+            "score": 60,
+        },
+        {
+            "system_mode": "academy",
+            "academy_scenario_id": "academy_anaphylaxis_rescue",
+            "academy_scenario_name": "严重过敏反应/过敏性休克抢救",
+            "participant_id": "ACAD001",
+            "collection_mode": "正式采集",
+            "collection_mode_code": "formal",
+            "assessment_phase": "模拟训练",
+            "session_id": "training_1",
+            "created_at": "2026-05-31T10:20:00",
+            "score": 90,
+        },
+        {
+            "system_mode": "academy",
+            "academy_scenario_id": "academy_anaphylaxis_rescue",
+            "academy_scenario_name": "严重过敏反应/过敏性休克抢救",
+            "participant_id": "ACAD001",
+            "collection_mode": "正式采集",
+            "collection_mode_code": "formal",
+            "assessment_phase": "课后考核",
+            "session_id": "post_1",
+            "created_at": "2026-05-31T10:40:00",
+            "score": 85,
+        },
+    ]
+    paired = build_participant_analysis_records(records)
+    assert len(paired) == 1
+    assert paired[0]["academy_scenario_id"] == "academy_anaphylaxis_rescue"
+    assert paired[0]["all_three_stages_recorded"] == "是"
+    assert paired[0]["formal_analysis_ready"] == "是"
+    assert paired[0]["score_change_post_minus_baseline"] == 25.0
+
+
 def test_missing_training_not_formal_analysis_ready() -> None:
     records = [
         {
@@ -192,6 +270,7 @@ if __name__ == "__main__":
         test_invalid_steroid_is_missing,
         test_epinephrine_underdose_subscore_policy,
         test_participant_pair_export,
+        test_academy_scenario_pair_export,
         test_missing_training_not_formal_analysis_ready,
     ]
     for test in tests:

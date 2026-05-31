@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Pediatric Ward Anaphylaxis Simulator (V1.2.11 research-collection-locked scoring and completion controls)
+Pediatric Ward Anaphylaxis Simulator (V1.3.5 academy branching enhanced from V1.3.4)
 
 特点：
 - 动态情景（规则驱动）：输入操作 -> 生命体征/症状随时间演化
@@ -153,6 +153,21 @@ class Simulator:
             "family_explain": 14,
             "sbar_handoff": 15,
         }
+
+        # V1.3.1: teaching-adapted scenarios may declare their own
+        # module scoring map and standard action order. Clinical scenarios keep
+        # the V1.2.11 locked scoring logic unchanged.
+        scenario_modules = scenario.get("module_scoring", {})
+        if isinstance(scenario_modules, dict) and scenario_modules:
+            self.module_scoring = scenario_modules
+            self.action_module_map = {
+                aid: module_id
+                for module_id, meta in self.module_scoring.items()
+                for aid in meta.get("actions", [])
+            }
+        scenario_order = scenario.get("standard_flow_order", {})
+        if isinstance(scenario_order, dict) and scenario_order:
+            self.standard_flow_order.update({str(k): int(v) for k, v in scenario_order.items()})
 
         base = scenario["baseline"]
 
@@ -543,6 +558,22 @@ class Simulator:
 
     def _unfinished_required_steps(self) -> List[str]:
         f = self.state.flags
+        target_group = self.scenario.get("scenario", {}).get("target_group", "")
+        issue_profile = self.scenario.get("reporting", {}).get("issue_profile", "")
+        if target_group == "nursing_student" or str(issue_profile).startswith("academy"):
+            checks = [
+                ("allergy_identification", "判断当前异常情况", bool(f.get("allergy_identified", False))),
+                ("stop_infusion", "暂停可疑输入并保留通路", bool(f.get("stopped_infusion", False) and f.get("iv_access", True))),
+                ("call_help", "呼叫老师/上级护士/医生", bool(f.get("help_called", False))),
+                ("high_flow_oxygen", "基础氧疗/气道支持", bool(f.get("oxygen_on", False))),
+                ("connect_monitor", "连接监护", bool(f.get("monitor_on", False))),
+                ("check_bp", "测量血压/循环评估", bool(f.get("bp_checked", False) or "check_bp" in self.action_first_time)),
+                ("prepare_rescue_equipment", "准备抢救用物并配合核对", bool(f.get("rescue_equipment_prepared", False))),
+                ("academy_reassess", "基础复评", bool(f.get("academy_reassessment_done", False))),
+                ("academy_family_communication", "家属安抚/告知", bool(f.get("academy_family_communication", False))),
+                ("academy_sbar_handoff", "简化SBAR汇报", bool(f.get("academy_sbar_done", False))),
+            ]
+            return [f"{aid}:{label}" for aid, label, ok in checks if not ok]
         checks = [
             ("stop_infusion", "停用可疑药物并保留通路", bool(f.get("stopped_infusion", False))),
             ("call_help", "呼救", bool(f.get("help_called", False))),
@@ -615,6 +646,14 @@ class Simulator:
         canonical = self._standard_score_action_id(action_id)
         f = self.state.flags
         t = int(self.state.t)
+
+        # V1.3.1 学院模式：基础教学病例不继承临床版肾上腺素/补液/复评边界。
+        target_group = self.scenario.get("scenario", {}).get("target_group", "")
+        issue_profile = self.scenario.get("reporting", {}).get("issue_profile", "")
+        if target_group == "nursing_student" or issue_profile == "academy_basic":
+            if canonical in self.action_module_map or canonical in self.standard_flow_order:
+                return points, "full", "学院基础能力动作已完成，按本模块分值计分。"
+            return points, "full", "非模块映射动作，按原始分值处理。"
 
         module1 = {"stop_infusion", "call_help"}
         module2 = {"abc_assess", "high_flow_oxygen", "shock_position", "connect_monitor", "check_bp"}
@@ -907,6 +946,13 @@ class Simulator:
         effective IM epinephrine.
         """
         f = self.state.flags
+        target_group = self.scenario.get("scenario", {}).get("target_group", "")
+        issue_profile = self.scenario.get("reporting", {}).get("issue_profile", "")
+        if target_group == "nursing_student" or issue_profile == "academy_basic":
+            f["operation_count"] = len(self.action_first_time)
+            f["pre_epi_core_steps_completed"] = 0
+            f["epinephrine_delay_after_core_steps"] = False
+            return
         core_count = self._core_steps_before_epinephrine_count()
         f["pre_epi_core_steps_completed"] = core_count
         f["operation_count"] = len(self.action_first_time)
@@ -1167,6 +1213,86 @@ class Simulator:
                 result = "已记录SBAR交接；需在第二次复评和家属告知后完成，才计入标准收尾分。"
             self._refresh_process_flags()
             self._log("action", action_id, {"label": action.get("label", ""), "gained": gained, "status": status, "result": result})
+            return
+
+        if action_id == "ask_family_first":
+            self._first_attempt(action_id)
+            self.state.flags["asked_family_before_rescue"] = True
+            self.state.flags.setdefault("academy_risk_tags", []).append("处置延迟")
+            self.apply_effects(action.get("effects", {}))
+            self._refresh_process_flags()
+            self.state.grade = self.compute_grade()
+            self._log("action", action_id, {
+                "label": action.get("label", ""),
+                "gained": 0,
+                "status": "delay_risk",
+                "risk_tags": ["处置延迟", "判断偏离重点"],
+                "result": "已记录先询问病史；当前应优先暂停可疑输入并呼救。"
+            })
+            return
+
+        if action_id == "send_family_for_help":
+            self._first_attempt(action_id)
+            self.state.flags["family_sent_for_help"] = True
+            self.state.flags.setdefault("academy_risk_tags", []).append("呼救方式不当")
+            self.apply_effects(action.get("effects", {}))
+            self._refresh_process_flags()
+            self.state.grade = self.compute_grade()
+            self._log("action", action_id, {
+                "label": action.get("label", ""),
+                "gained": 0,
+                "status": "call_help_inappropriate",
+                "risk_tags": ["呼救方式不当", "延迟启动抢救"],
+                "result": "已记录让家属寻找帮助；抢救场景应由护生直接呼叫老师/上级护士/医生。"
+            })
+            return
+
+        if action_id == "prepare_steroid_antihistamine_only":
+            self._first_attempt(action_id)
+            self.state.flags["secondary_drug_priority_error"] = True
+            self.state.flags.setdefault("academy_risk_tags", []).append("急救药物优先级错误")
+            self.apply_effects(action.get("effects", {}))
+            self._refresh_process_flags()
+            self.state.grade = self.compute_grade()
+            self._log("action", action_id, {
+                "label": action.get("label", ""),
+                "gained": 0,
+                "status": "drug_priority_error",
+                "risk_tags": ["急救药物优先级错误", "误认为二线药物可替代一线急救药物"],
+                "result": "已记录仅优先准备辅助用药；糖皮质激素/抗组胺药不能替代肾上腺素的一线地位。"
+            })
+            return
+
+        if action_id == "student_independent_epinephrine":
+            self._first_attempt(action_id)
+            self.state.flags["student_role_boundary_risk"] = True
+            self.state.flags.setdefault("academy_risk_tags", []).append("护生身份边界风险")
+            self.apply_effects(action.get("effects", {}))
+            self._refresh_process_flags()
+            self.state.grade = self.compute_grade()
+            self._log("action", action_id, {
+                "label": action.get("label", ""),
+                "gained": 0,
+                "status": "role_boundary_risk",
+                "risk_tags": ["护生身份边界风险", "用药安全风险"],
+                "result": "已记录越权独立急救用药倾向；护生应呼救并在老师/医生指导下配合核对与准备。"
+            })
+            return
+
+        if action_id == "watch_only":
+            self._first_attempt(action_id)
+            self.state.flags["watch_only_no_rescue_cooperation"] = True
+            self.state.flags.setdefault("academy_risk_tags", []).append("抢救配合不足")
+            self.apply_effects(action.get("effects", {}))
+            self._refresh_process_flags()
+            self.state.grade = self.compute_grade()
+            self._log("action", action_id, {
+                "label": action.get("label", ""),
+                "gained": 0,
+                "status": "passive_response",
+                "risk_tags": ["抢救配合不足", "延迟启动抢救"],
+                "result": "已记录仅旁观等待；护生应在身份边界内参与呼救、准备和监测配合。"
+            })
             return
 
         if action_id == "establish_iv":
@@ -1714,6 +1840,40 @@ class Simulator:
     def _process_safety_issues(self) -> List[str]:
         issues = []
         f = self.state.flags
+        issue_profile = self.scenario.get("reporting", {}).get("issue_profile", "")
+        target_group = self.scenario.get("scenario", {}).get("target_group", "")
+        if issue_profile == "academy_basic" or target_group == "nursing_student":
+            if not f.get("allergy_identified", False):
+                issues.append("未识别疑似药物过敏反应/危险信号")
+            if not f.get("stopped_infusion", False):
+                issues.append("未停止可疑药物/输液")
+            if not f.get("help_called", False):
+                issues.append("未及时呼叫老师/上级护士/医生")
+            if not f.get("oxygen_on", False):
+                issues.append("未进行基础给氧支持")
+            if not f.get("monitor_on", False):
+                issues.append("未连接监护/持续观察生命体征")
+            if not (f.get("bp_checked", False) or "check_bp" in self.action_first_time):
+                issues.append("未测量血压/评估循环状态")
+            if not f.get("rescue_equipment_prepared", False):
+                issues.append("未准备抢救用物/急救药物配合")
+            if not f.get("academy_reassessment_done", False):
+                issues.append("未完成基础复评")
+            if not f.get("academy_family_communication", False):
+                issues.append("未进行基础家属安抚/告知")
+            if not f.get("academy_sbar_done", False):
+                issues.append("未完成简化SBAR汇报")
+            if f.get("asked_family_before_rescue", False):
+                issues.append("先询问病史导致关键处置延迟")
+            if f.get("family_sent_for_help", False):
+                issues.append("呼救方式不当：让家属去找人而非直接呼叫老师/医护")
+            if f.get("secondary_drug_priority_error", False):
+                issues.append("急救药物优先级错误：误将糖皮质激素/抗组胺药置于一线处理")
+            if f.get("student_role_boundary_risk", False):
+                issues.append("护生身份边界风险：存在越权独立急救用药倾向")
+            if f.get("watch_only_no_rescue_cooperation", False):
+                issues.append("抢救配合不足：仅旁观等待，未在身份边界内参与协作")
+            return issues
         if not f.get("stopped_infusion", False):
             issues.append("未停用可疑药物/输液")
         if f.get("iv_removed", False) or "remove_iv" in self.action_first_time:
@@ -1937,6 +2097,18 @@ class Simulator:
                 "bvm_done": bool(f.get("bvm_done", False)),
                 "epinephrine_delay_after_core_steps": bool(f.get("epinephrine_delay_after_core_steps", False)),
                 "pre_epi_core_steps_completed": int(f.get("pre_epi_core_steps_completed", 0)),
+                "allergy_identified": bool(f.get("allergy_identified", False)),
+                "rescue_equipment_prepared": bool(f.get("rescue_equipment_prepared", False)),
+                "academy_reassessment_done": bool(f.get("academy_reassessment_done", False)),
+                "academy_family_communication": bool(f.get("academy_family_communication", False)),
+                "academy_sbar_done": bool(f.get("academy_sbar_done", False)),
+                "academy_completed": bool(f.get("academy_completed", False)),
+                "academy_risk_tags": list(dict.fromkeys(f.get("academy_risk_tags", []) or [])),
+                "asked_family_before_rescue": bool(f.get("asked_family_before_rescue", False)),
+                "family_sent_for_help": bool(f.get("family_sent_for_help", False)),
+                "secondary_drug_priority_error": bool(f.get("secondary_drug_priority_error", False)),
+                "student_role_boundary_risk": bool(f.get("student_role_boundary_risk", False)),
+                "watch_only_no_rescue_cooperation": bool(f.get("watch_only_no_rescue_cooperation", False)),
             },
             "key_timeline": {
                 "stop_infusion": t_of("stop_infusion"),
@@ -1973,6 +2145,16 @@ class Simulator:
                 "advanced_support_current_reason": f.get("advanced_support_current_reason", ""),
                 "bvm_ventilation": t_of("bvm_ventilation"),
                 "cpr": t_of("cpr"),
+                "allergy_identification": t_of("allergy_identification"),
+                "prepare_rescue_equipment": t_of("prepare_rescue_equipment"),
+                "academy_reassess": t_of("academy_reassess"),
+                "academy_family_communication": t_of("academy_family_communication"),
+                "academy_sbar_handoff": t_of("academy_sbar_handoff"),
+                "ask_family_first": t_of("ask_family_first"),
+                "send_family_for_help": t_of("send_family_for_help"),
+                "prepare_steroid_antihistamine_only": t_of("prepare_steroid_antihistamine_only"),
+                "student_independent_epinephrine": t_of("student_independent_epinephrine"),
+                "watch_only": t_of("watch_only"),
                 "cardiac_arrest_time_sec": f.get("cardiac_arrest_time_sec", None),
                 "resuscitation_rosc_time_sec": f.get("resuscitation_rosc_time_sec", None),
                 "epinephrine_delay_after_core_steps": bool(f.get("epinephrine_delay_after_core_steps", False)),
@@ -1999,6 +2181,11 @@ class Simulator:
                 "second_reassessment": t_valid("reassess_second"),
                 "family_communication": t_valid("family_explain"),
                 "sbar_handoff": t_valid("sbar_handoff"),
+                "allergy_identification": t_valid("allergy_identification"),
+                "prepare_rescue_equipment": t_valid("prepare_rescue_equipment"),
+                "academy_reassess": t_valid("academy_reassess"),
+                "academy_family_communication": t_valid("academy_family_communication"),
+                "academy_sbar_handoff": t_valid("academy_sbar_handoff"),
                 "establish_iv": t_valid("establish_iv"),
             },
             "observe_recommendation": self.scenario.get("reporting", {}).get("observe_recommendation", {}),

@@ -1,0 +1,16 @@
+[
+  {
+    "org_id": "ACD_EXAMPLE",
+    "org_type": "academy",
+    "code_type": "academy_admin",
+    "school_name": "示例护理职业学院",
+    "hospital_name": "",
+    "department_name": "护理学院",
+    "admin_code_hash": "请由系统生成，不建议手写",
+    "code_prefix": "ACD-DEMO-NURS",
+    "permissions": ["view", "export"],
+    "status": "active",
+    "created_at": "2026-05-31T00:00:00",
+    "note": "示例结构，不作为真实管理码使用"
+  }
+]
