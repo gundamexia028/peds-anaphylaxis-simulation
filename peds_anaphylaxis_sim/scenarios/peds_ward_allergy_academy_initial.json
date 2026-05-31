@@ -4,7 +4,7 @@
     "id": "peds_ward_allergy_academy_initial",
     "title": "儿科严重过敏反应/过敏性休克抢救虚拟仿真｜学院基础版",
     "language": "zh-CN",
-    "version": "V1.3.6-academy-post-test-completion-gate-fixed",
+    "version": "V1.3.8-academy-teacher-trial-ui-display-fixed",
     "source_note": "V1.3.6在V1.3.5基础上修复学院课后考核完成门控：未完成完整流程不进入SUS/教学体验；早期低血压或低氧恶化不再直接终止学院考核。",
     "mode_defaults": {
       "coach": true,

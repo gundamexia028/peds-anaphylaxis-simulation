@@ -1095,6 +1095,54 @@ class Simulator:
         }
         return int(gained)
 
+    def _is_academy_basic_case(self) -> bool:
+        issue_profile = self.scenario.get("reporting", {}).get("issue_profile", "")
+        target_group = self.scenario.get("scenario", {}).get("target_group", "")
+        return bool(issue_profile == "academy_basic" or target_group == "nursing_student")
+
+    def _record_academy_unsafe_action(self, action_id: str, action: Dict[str, Any]) -> None:
+        """Record academy-mode unsafe choices and assign a score penalty.
+
+        V1.3.7: V1.3.6 could still award 100/100 if the learner completed all
+        required positive actions after also clicking a harmful distractor such as
+        continue_infusion. The action was visible in the log and worsened vitals,
+        but it did not affect the displayed score. In academy scoring, such choices
+        must lower the total and appear in process safety issues.
+        """
+        if not self._is_academy_basic_case():
+            return
+        category = str(action.get("category", ""))
+        risk_tags = list(action.get("risk_tags", []) or [])
+        unsafe_ids = {
+            "continue_infusion",
+            "ask_family_first",
+            "send_family_for_help",
+            "prepare_steroid_antihistamine_only",
+            "student_independent_epinephrine",
+            "watch_only",
+            "remove_iv",
+        }
+        if action_id not in unsafe_ids and not category.startswith("unsafe") and not risk_tags:
+            return
+        self.state.flags["academy_harmful_action_selected"] = True
+        self.state.flags.setdefault("academy_harmful_actions", [])
+        self.state.flags["academy_harmful_actions"].append(action_id)
+        self.state.flags.setdefault("academy_risk_tags", [])
+        for tag in risk_tags:
+            self.state.flags["academy_risk_tags"].append(tag)
+        penalty_map = {
+            "continue_infusion": 10,
+            "remove_iv": 10,
+            "student_independent_epinephrine": 10,
+            "prepare_steroid_antihistamine_only": 8,
+            "send_family_for_help": 6,
+            "ask_family_first": 5,
+            "watch_only": 5,
+        }
+        penalty = int(penalty_map.get(action_id, 5))
+        self.state.flags["academy_safety_penalty_points"] = int(self.state.flags.get("academy_safety_penalty_points", 0) or 0) + penalty
+        self.penalties += penalty
+
     def apply_action(self, action_id: str) -> None:
         action = self._find_action(action_id)
         if not action:
@@ -1118,6 +1166,10 @@ class Simulator:
                 "result": "心肺骤停后未立即进行CPR，死亡事件已记录。"
             })
             return
+
+        # V1.3.7: record academy unsafe distractors immediately so they reduce
+        # displayed score and cannot coexist with a perfect 100/100 report.
+        self._record_academy_unsafe_action(action_id, action)
 
         # Custom actions whose score depends on prerequisites, not just first click.
         if action_id == "reassess_first":
@@ -1873,6 +1925,11 @@ class Simulator:
                 issues.append("护生身份边界风险：存在越权独立急救用药倾向")
             if f.get("watch_only_no_rescue_cooperation", False):
                 issues.append("抢救配合不足：仅旁观等待，未在身份边界内参与协作")
+            harmful = list(f.get("academy_harmful_actions", []) or [])
+            if "continue_infusion" in harmful:
+                issues.append("曾选择继续观察/暂不改变输入，属于延迟去除可疑诱因或低估病情")
+            if harmful and not any("不恰当选项" in x for x in issues):
+                issues.append("本次流程曾选择不恰当选项，已计入学院模式安全扣分")
             return issues
         if not f.get("stopped_infusion", False):
             issues.append("未停用可疑药物/输液")
@@ -2016,6 +2073,9 @@ class Simulator:
             return None
 
         f = self.state.flags
+        academy_safety_penalty = int(f.get("academy_safety_penalty_points", 0) or 0) if self._is_academy_basic_case() else 0
+        display_score = max(0, int(self.score) - academy_safety_penalty)
+
         report = {
             "scenario_id": self.scenario["scenario"]["id"],
             "scenario_title": self.scenario["scenario"]["title"],
@@ -2040,10 +2100,11 @@ class Simulator:
             "death_after_arrest_without_cpr": bool(f.get("death_after_arrest_without_cpr", False)),
             "death_time_sec": f.get("death_time_sec", None),
             "death_reason": f.get("death_reason", ""),
-            "score": self.score,
+            "score": display_score,
             "raw_score": self.score,
             "penalties": self.penalties,
-            "penalties_not_subtracted_from_main_score": True,
+            "academy_safety_penalty_points": academy_safety_penalty,
+            "penalties_not_subtracted_from_main_score": False if academy_safety_penalty else True,
             "max_score": self.max_score,
             "critical_missing": missing,
             "process_safety_issues": self._process_safety_issues(),
@@ -2109,6 +2170,9 @@ class Simulator:
                 "secondary_drug_priority_error": bool(f.get("secondary_drug_priority_error", False)),
                 "student_role_boundary_risk": bool(f.get("student_role_boundary_risk", False)),
                 "watch_only_no_rescue_cooperation": bool(f.get("watch_only_no_rescue_cooperation", False)),
+                "academy_harmful_action_selected": bool(f.get("academy_harmful_action_selected", False)),
+                "academy_harmful_actions": list(f.get("academy_harmful_actions", []) or []),
+                "academy_safety_penalty_points": int(f.get("academy_safety_penalty_points", 0) or 0),
             },
             "key_timeline": {
                 "stop_infusion": t_of("stop_infusion"),

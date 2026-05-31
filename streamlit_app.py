@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-护理动态分支虚拟仿真训练平台｜V1.3.6 academy post-test completion gate fixed
+护理动态分支虚拟仿真训练平台｜V1.3.8 academy teacher trial UI display fixed
 
 本版重点：
 - 时间/分级/得分/复评移至左侧病例下方的运行信息区；
@@ -56,7 +56,7 @@ RESULTS_INDEX_PATH = RUNS_DIR / "training_results.jsonl"
 RESULTS_FULL_REPORTS_PATH = RUNS_DIR / "training_full_reports.jsonl"
 CONFIG_DIR = ROOT / "config"
 ORG_ACCESS_CODES_PATH = CONFIG_DIR / "org_access_codes.json"
-APP_VERSION = "V1.3.6 academy post-test completion gate fixed from V1.3.5"
+APP_VERSION = "V1.3.8 academy teacher trial UI display fixed from V1.3.7"
 
 DEFAULT_INSTITUTION = "四川大学华西第二医院"
 
@@ -2734,13 +2734,29 @@ def inject_compact_css() -> None:
             font-size:0.82rem;
             text-align:right;
         }
+        /* V1.3.8: training/exam action buttons use full text with adaptive height.
+           Avoid clipping long Chinese option labels in teacher trial. */
         .stButton > button {
-            min-height: 3.08rem !important;
-            padding: 0.50rem 0.58rem !important;
-            font-size: 1.03rem !important;
-            line-height: 1.22 !important;
+            height: auto !important;
+            min-height: 4.9rem !important;
+            padding: 0.62rem 0.72rem !important;
+            font-size: 0.98rem !important;
+            line-height: 1.34 !important;
             border-radius: 0.66rem !important;
             white-space: normal !important;
+            word-break: break-word !important;
+            overflow-wrap: anywhere !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+        }
+        .stButton > button p, .stButton > button div, .stButton > button span {
+            white-space: normal !important;
+            word-break: break-word !important;
+            overflow-wrap: anywhere !important;
+            line-height: 1.34 !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            display: block !important;
         }
         .dose-card {
             border: 1px solid #c7d2fe;
@@ -3917,13 +3933,41 @@ def render_prior_experience_survey() -> None:
 
 
 def visible_actions_for_current_state(sim: Simulator) -> List[Dict[str, Any]]:
-    """Hide conditional rescue options until their branch is clinically active."""
+    """Hide conditional or already-invalid distractor options.
+
+    V1.3.7: In academy exam mode, unsafe distractors are still available before
+    the corresponding core step is completed so they can test baseline judgment,
+    but they are hidden after the correct step has already been done. This prevents
+    impossible sequences such as: first pause the infusion correctly, then later
+    click "continue observing / do not change the infusion", which previously
+    could worsen vitals while still allowing a full-score completion.
+    """
     visible: List[Dict[str, Any]] = []
     flags = sim.state.flags
+    scenario_meta = (sim.scenario or {}).get("scenario", {}) if hasattr(sim, "scenario") else {}
+    is_academy = current_system_mode() == "academy" or scenario_meta.get("target_group") == "nursing_student"
     for action in sim.actions:
         aid = action.get("id", "")
         if aid == "repeat_epinephrine" and not flags.get("repeat_epi_indicated", False):
             continue
+        if is_academy:
+            # Once the learner has correctly paused the suspicious infusion, the
+            # delay/continue-observation distractor is no longer a meaningful next
+            # action and should not remain clickable.
+            if aid == "continue_infusion" and flags.get("stopped_infusion", False):
+                continue
+            # Once direct help has been called, the incorrect indirect-call options
+            # should no longer be offered as if they were still available.
+            if aid == "send_family_for_help" and flags.get("help_called", False):
+                continue
+            # Once the critical first response has started, asking history first is
+            # no longer a valid initial-priority distractor.
+            if aid == "ask_family_first" and (flags.get("stopped_infusion", False) or flags.get("help_called", False)):
+                continue
+            # If rescue equipment/epinephrine preparation has already been selected,
+            # do not keep the "only steroid/antihistamine" priority-error button.
+            if aid == "prepare_steroid_antihistamine_only" and flags.get("rescue_equipment_prepared", False):
+                continue
         visible.append(action)
     return visible
 
@@ -4001,14 +4045,16 @@ def render_simulation() -> None:
             steroid_pending = render_steroid_dose_panel(sim)
 
             actions = visible_actions_for_current_state(sim)
-            option_cols = 4
+            # V1.3.8: use fewer columns so long action labels are readable.
+            # Prior 4-column layout clipped or truncated text during training.
+            option_cols = 3
             for idx in range(0, len(actions), option_cols):
                 row = st.columns(option_cols, gap="medium")
                 for local_index, (col, action) in enumerate(zip(row, actions[idx: idx + option_cols])):
                     full_label = display_action_label(action, sim)
-                    short_label = compact_action_label(full_label, max_chars=18)
                     aid = action.get("id")
-                    button_text = f"{idx + local_index + 1}. {short_label}"
+                    # V1.3.8: display complete option text instead of compact ellipsis labels.
+                    button_text = f"{idx + local_index + 1}. {full_label}"
                     with col:
                         if st.button(
                             button_text,
