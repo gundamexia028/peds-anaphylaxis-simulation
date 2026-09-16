@@ -30,6 +30,7 @@ if "streamlit" not in sys.modules:
         secrets={},
         cache_resource=_cache_passthrough,
         cache_data=_cache_passthrough,
+        fragment=_cache_passthrough,
     )
 
 
@@ -37,7 +38,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from peds_anaphylaxis_sim.engine import Simulator, load_scenario  # noqa: E402
-from streamlit_app import build_data_quality_records, build_participant_analysis_records  # noqa: E402
+from streamlit_app import (  # noqa: E402
+    build_data_quality_records,
+    build_participant_analysis_records,
+    live_display_vitals,
+    st,
+)
 
 
 SCENARIO = ROOT / "peds_anaphylaxis_sim" / "scenarios" / "peds_ward_anaphylaxis_iv_initial.json"
@@ -264,6 +270,34 @@ def test_missing_training_not_formal_analysis_ready() -> None:
     assert any(item["assessment_phase"] == "模拟培训" for item in quality)
 
 
+
+def test_clinical_live_vitals_display_only() -> None:
+    scenario = load_scenario(str(SCENARIO))
+    sim = Simulator(scenario, mode="exam", seed=123)
+    sim.apply_action("connect_monitor")
+    sim.apply_action("check_bp")
+    st.session_state["system_mode"] = "clinical"
+    st.session_state["session_id"] = "TEST-LIVE-001"
+    t0 = sim.state.t
+    before = dict(sim.state.vitals)
+    a = live_display_vitals(sim, bucket=10)
+    b = live_display_vitals(sim, bucket=11)
+    assert a != b
+    assert sim.state.t == t0
+    assert dict(sim.state.vitals) == before
+
+
+def test_academy_vitals_not_animated() -> None:
+    scenario = load_scenario(str(SCENARIO))
+    sim = Simulator(scenario, mode="exam", seed=123)
+    sim.apply_action("connect_monitor")
+    sim.apply_action("check_bp")
+    st.session_state["system_mode"] = "academy"
+    a = live_display_vitals(sim, bucket=10)
+    b = live_display_vitals(sim, bucket=11)
+    assert a == b
+
+
 if __name__ == "__main__":
     tests = [
         test_standard_path_full_score,
@@ -272,6 +306,8 @@ if __name__ == "__main__":
         test_participant_pair_export,
         test_academy_scenario_pair_export,
         test_missing_training_not_formal_analysis_ready,
+        test_clinical_live_vitals_display_only,
+        test_academy_vitals_not_animated,
     ]
     for test in tests:
         test()
